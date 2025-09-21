@@ -37,9 +37,11 @@ class JR100App:
         pygame.init()
         pygame.display.set_caption("JR-100 Emulator (Python WIP)")
 
-        rom_image = None
-        if self._config.rom_path:
-            rom_image = self._config.rom_path.read_bytes()
+        if not self._config.rom_path:
+            raise RuntimeError("ROMファイル (JR100 ROM) を --rom で指定してください")
+        if not self._config.rom_path.exists():
+            raise RuntimeError(f"ROM file not found: {self._config.rom_path}")
+        rom_image = self._config.rom_path.read_bytes()
 
         machine = create_machine(MachineConfig(rom_image=rom_image))
         renderer = Renderer(FontSet())
