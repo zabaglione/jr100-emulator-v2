@@ -14,6 +14,7 @@ class SquareWaveBeeper:
         *,
         sample_rate: int = 44_100,
         volume: float = 0.35,
+        min_play_ms: int = 35,
     ) -> None:
         try:
             import pygame  # type: ignore
@@ -26,9 +27,11 @@ class SquareWaveBeeper:
         self._pygame = pygame
         self._sample_rate = max(1, sample_rate)
         self._volume = max(0.0, min(1.0, volume))
+        self._min_play_ms = max(0, min_play_ms)
         self._channel: Optional[pygame.mixer.Channel] = None
         self._sound: Optional[pygame.mixer.Sound] = None
         self._frequency: float = 0.0
+        self._last_start_ms: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -40,10 +43,12 @@ class SquareWaveBeeper:
             self._stop()
             return
 
+        now = self._pygame.time.get_ticks()
         if self._sound is not None and abs(self._frequency - frequency) < 0.5:
             if self._channel is not None and not self._channel.get_busy():
                 self._channel.play(self._sound, loops=-1)
                 self._channel.set_volume(self._volume)
+                self._last_start_ms = now
             return
 
         sound = self._build_sound(frequency)
@@ -62,6 +67,7 @@ class SquareWaveBeeper:
         channel.set_volume(self._volume)
         self._sound = sound
         self._frequency = frequency
+        self._last_start_ms = now
 
     def shutdown(self) -> None:
         """Stop any active tone and release resources."""
@@ -74,7 +80,15 @@ class SquareWaveBeeper:
 
     def _stop(self) -> None:
         if self._channel is not None:
-            self._channel.stop()
+            if self._min_play_ms > 0:
+                elapsed = self._pygame.time.get_ticks() - self._last_start_ms
+                remaining = self._min_play_ms - elapsed
+                if remaining > 0:
+                    self._channel.fadeout(int(max(10, remaining)))
+                else:
+                    self._channel.stop()
+            else:
+                self._channel.stop()
         self._sound = None
         self._frequency = 0.0
 
@@ -96,4 +110,3 @@ class SquareWaveBeeper:
 
 
 __all__ = ["SquareWaveBeeper"]
-

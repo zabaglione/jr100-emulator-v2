@@ -217,6 +217,8 @@ class JR100App:
     def _handle_buzzer(self, enabled: bool, frequency: float) -> None:
         self._buzzer_enabled = enabled
         self._buzzer_frequency = frequency
+        if debug_enabled("audio"):
+            debug_log("audio", "buzzer enabled=%s freq=%.2f", enabled, frequency)
         if self._beeper is not None:
             self._beeper.set_state(enabled, frequency)
 
