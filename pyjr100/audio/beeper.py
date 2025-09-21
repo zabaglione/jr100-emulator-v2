@@ -93,13 +93,16 @@ class SquareWaveBeeper:
         self._frequency = 0.0
 
     def _build_sound(self, frequency: float) -> Optional["pygame.mixer.Sound"]:
-        samples_per_period = max(2, int(self._sample_rate / max(1.0, frequency)))
-        half_period = max(1, samples_per_period // 2)
+        if frequency <= 0.0:
+            return None
+
+        cycles = max(1, int(round(self._sample_rate / frequency)))
+        half_period = max(1, cycles // 2)
 
         buffer = array("h")
         high = 24_000
         low = -high
-        for index in range(samples_per_period):
+        for index in range(cycles):
             buffer.append(high if index < half_period else low)
 
         try:
