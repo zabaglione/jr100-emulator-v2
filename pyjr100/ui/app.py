@@ -25,6 +25,7 @@ class JR100App:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
         self._running = False
+        self._keyboard = None
 
     def run(self) -> None:
         try:
@@ -48,6 +49,7 @@ class JR100App:
 
         clock = pygame.time.Clock()
         self._running = True
+        self._keyboard = machine.keyboard
 
         self._initialize_screen(machine)
 
@@ -57,6 +59,10 @@ class JR100App:
                     self._running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self._running = False
+                elif event.type == pygame.KEYDOWN:
+                    self._handle_key_event(pygame, event.key, pressed=True)
+                elif event.type == pygame.KEYUP:
+                    self._handle_key_event(pygame, event.key, pressed=False)
 
             vram_bytes = machine.video_ram.snapshot()
             user_chars = machine.udc_ram.snapshot()
@@ -77,3 +83,37 @@ class JR100App:
         # Fill the rest of the line with spaces.
         for idx in range(len(message), 32):
             machine.memory.store8(base + idx, 0x20)
+
+    def _handle_key_event(self, pygame, key_code: int, *, pressed: bool) -> None:
+        if self._keyboard is None:
+            return
+        name = pygame.key.name(key_code)
+        canonical = _canonical_name(name)
+        if canonical is None:
+            return
+        if pressed:
+            self._keyboard.press(canonical)
+        else:
+            self._keyboard.release(canonical)
+
+
+def _canonical_name(name: str) -> str | None:
+    mapping = {
+        "semicolon": ";",
+        "minus": "-",
+        "comma": ",",
+        "period": ".",
+        "space": "space",
+        "return": "return",
+        "enter": "return",
+        "left shift": "shift",
+        "right shift": "shift",
+        "left ctrl": "control",
+        "right ctrl": "control",
+    }
+    lowered = name.lower()
+    if lowered in mapping:
+        return mapping[lowered]
+    if len(lowered) == 1:
+        return lowered
+    return mapping.get(lowered)

@@ -7,6 +7,7 @@ from typing import Optional
 
 from pyjr100.bus import Addressable, Memory, MemorySystem, UnmappedMemory
 from pyjr100.cpu import MB8861
+from pyjr100.io import Keyboard
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Machine:
     extended_io: Addressable
     via: Addressable
     rom: Memory
+    keyboard: Keyboard
 
 
 class MainRam(Memory):
@@ -127,6 +129,8 @@ def create_machine(config: MachineConfig) -> Machine:
         rom.load_image(config.rom_image)
     memory.register_memory(rom)
 
+    keyboard = Keyboard()
+
     cpu = MB8861(memory)
     cpu.reset()
 
@@ -139,5 +143,5 @@ def create_machine(config: MachineConfig) -> Machine:
         extended_io=extended_io,
         via=via,
         rom=rom,
+        keyboard=keyboard,
     )
-

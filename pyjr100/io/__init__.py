@@ -1,3 +1,7 @@
-"""Placeholder module for the JR-100 Python port."""
+"""Input-related helpers for the JR-100 Python port."""
 
-__all__: list[str] = []
+from __future__ import annotations
+
+from .keyboard import Keyboard
+
+__all__ = ["Keyboard"]
