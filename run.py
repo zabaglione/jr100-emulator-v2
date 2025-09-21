@@ -42,17 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    config = AppConfig(
-        rom_path=args.rom,
-        scale=args.scale,
-        fullscreen=args.fullscreen,
-    )
+    if args.rom and not args.rom.exists():
+        parser.error(f"ROM file not found: {args.rom}")
 
+    config = AppConfig(rom_path=args.rom, scale=args.scale, fullscreen=args.fullscreen)
     app = JR100App(config)
     try:
         app.run()
-    except NotImplementedError as exc:  # expected until the UI loop exists
-        parser.exit(1, f"run.py: functionality pending — {exc}\n")
+    except RuntimeError as exc:
+        parser.exit(1, f"run.py: {exc}\n")
     return 0
 
 

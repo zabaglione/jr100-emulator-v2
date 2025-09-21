@@ -78,6 +78,11 @@ class Memory(Addressable):
     def store8(self, address: int, value: int) -> None:
         self._data[self._offset(address)] = value & 0xFF
 
+    def snapshot(self) -> bytes:
+        """Return an immutable copy of the memory contents."""
+
+        return bytes(self._data)
+
 
 class UnmappedMemory(Addressable):
     """Fallback region used for addresses without a mapped device."""

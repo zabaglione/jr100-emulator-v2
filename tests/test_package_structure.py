@@ -4,7 +4,7 @@ import pyjr100
 
 
 def test_package_exports() -> None:
-    for name in ("cpu", "bus", "video", "audio", "io", "rom", "loader", "ui", "utils"):
+    for name in ("cpu", "bus", "video", "audio", "io", "rom", "system", "loader", "ui", "utils"):
         assert hasattr(pyjr100, name), f"missing submodule: {name}"
 
 
