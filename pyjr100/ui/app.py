@@ -8,6 +8,7 @@ from typing import Optional
 
 from pyjr100.system import MachineConfig, create_machine
 from pyjr100.video import FontSet, Renderer
+from pyjr100.cpu import IllegalOpcodeError
 
 
 @dataclass
@@ -64,6 +65,9 @@ class JR100App:
                 elif event.type == pygame.KEYUP:
                     self._handle_key_event(pygame, event.key, pressed=False)
 
+            if rom_image:
+                self._step_cpu(machine)
+
             vram_bytes = machine.video_ram.snapshot()
             user_chars = machine.udc_ram.snapshot()
             frame = renderer.render(vram_bytes, user_ram=user_chars, scale=self._config.scale)
@@ -71,7 +75,7 @@ class JR100App:
             pygame_surface = frame.to_surface()
             screen.blit(pygame_surface, (0, 0))
             pygame.display.flip()
-            clock.tick(60)
+            clock.tick(_FRAME_RATE)
 
         pygame.quit()
 
@@ -96,6 +100,23 @@ class JR100App:
         else:
             self._keyboard.release(canonical)
 
+    def _step_cpu(self, machine) -> None:
+        target_cycles = _CYCLES_PER_FRAME
+        cycles = 0
+        idle_loops = 0
+
+        try:
+            while cycles < target_cycles and idle_loops < _MAX_IDLE_STEPS:
+                executed = machine.cpu.step()
+                if executed == 0:
+                    idle_loops += 1
+                else:
+                    cycles += executed
+                    idle_loops = 0
+        except IllegalOpcodeError as exc:
+            self._running = False
+            raise RuntimeError(f"Illegal opcode encountered: {exc}")
+
 
 def _canonical_name(name: str) -> str | None:
     mapping = {
@@ -117,3 +138,9 @@ def _canonical_name(name: str) -> str | None:
     if len(lowered) == 1:
         return lowered
     return mapping.get(lowered)
+
+
+_CPU_FREQUENCY = 894_886  # Hz
+_FRAME_RATE = 60
+_CYCLES_PER_FRAME = _CPU_FREQUENCY // _FRAME_RATE
+_MAX_IDLE_STEPS = 1000
