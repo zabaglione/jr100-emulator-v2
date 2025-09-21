@@ -173,6 +173,7 @@ class Via6522(Addressable):
         elif offset == 0x0C:
             self._pcr = value
             self._debug("pcr", pcr=self._pcr)
+            self._reset_keyboard_handshake()
         elif offset == 0x0D:
             self._clear_ifr(value)
         elif offset == 0x0E:
@@ -404,6 +405,9 @@ class Via6522(Addressable):
             if self._ca2_handshake_enabled():
                 self._set_ca2(False)
                 self._ca2_latched = True
+        else:
+            self._clear_timer2_interrupt()
+            self._key_irq_pending = False
 
     def _set_ca2(self, high: bool) -> None:
         level = 1 if high else 0
@@ -438,8 +442,7 @@ class Via6522(Addressable):
             self._update_ca1(self._any_keys_pressed())
         self._update_ca1(self._any_keys_pressed())
         if not self._any_keys_pressed():
-            self._timer2_auto_reload = False
-            self._key_irq_pending = False
+            self._reset_keyboard_handshake()
 
     def _any_keys_pressed(self) -> bool:
         return any(value & 0x1F for value in self._keyboard.snapshot())
@@ -455,6 +458,13 @@ class Via6522(Addressable):
             self._timer2 = period
         self._timer2_active = True
         self._clear_timer2_interrupt()
+
+    def _reset_keyboard_handshake(self) -> None:
+        self._timer2_auto_reload = False
+        self._timer2_active = False
+        self._key_irq_pending = False
+        self._clear_timer1_interrupt()
+        self._clear_ifr(IFR_BIT_T2 | IFR_BIT_CB2)
 
     def _debug(self, event: str, **fields) -> None:
         if not debug_enabled("via"):
