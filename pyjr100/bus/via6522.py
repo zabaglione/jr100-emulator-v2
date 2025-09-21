@@ -70,6 +70,7 @@ class Via6522(Addressable):
         self._timer2_auto_reload = False
         self._key_timer_period = 1
         self._key_irq_pending = False
+        self._key_release_countdown = 0
 
         # PB7 mirrors PB6 through JR-100 wiring
         self._pb7 = 1
@@ -213,6 +214,10 @@ class Via6522(Addressable):
                 else:
                     self._timer2 = self._timer2_latch or 0x10000
                     self._timer2_active = False
+        if self._key_release_countdown > 0:
+            self._key_release_countdown = max(0, self._key_release_countdown - cycles)
+            if self._key_release_countdown == 0:
+                self._reset_keyboard_handshake()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -406,8 +411,10 @@ class Via6522(Addressable):
                 self._set_ca2(False)
                 self._ca2_latched = True
         else:
-            self._clear_timer2_interrupt()
-            self._key_irq_pending = False
+            # CA1が非アクティブに戻っても、6522ではIFRのハンドシェイクビットは
+            # CPUが手動でクリアするまで保持される。Python版でも同じ挙動にするため
+            # ここではタイマ2割り込みを自動的に解放しない。
+            self._key_irq_pending = bool(self._ifr & IFR_BIT_T2)
 
     def _set_ca2(self, high: bool) -> None:
         level = 1 if high else 0
@@ -442,7 +449,7 @@ class Via6522(Addressable):
             self._update_ca1(self._any_keys_pressed())
         self._update_ca1(self._any_keys_pressed())
         if not self._any_keys_pressed():
-            self._reset_keyboard_handshake()
+            self._key_release_countdown = max(self._key_release_countdown, self._key_timer_period)
 
     def _any_keys_pressed(self) -> bool:
         return any(value & 0x1F for value in self._keyboard.snapshot())
@@ -458,13 +465,14 @@ class Via6522(Addressable):
             self._timer2 = period
         self._timer2_active = True
         self._clear_timer2_interrupt()
+        self._key_release_countdown = period
 
     def _reset_keyboard_handshake(self) -> None:
         self._timer2_auto_reload = False
         self._timer2_active = False
         self._key_irq_pending = False
         self._clear_timer1_interrupt()
-        self._clear_ifr(IFR_BIT_T2 | IFR_BIT_CB2)
+        self._clear_ifr(IFR_BIT_CB2)
 
     def _debug(self, event: str, **fields) -> None:
         if not debug_enabled("via"):
