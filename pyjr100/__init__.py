@@ -7,7 +7,7 @@ port progresses.
 
 from __future__ import annotations
 
-from . import audio, bus, cpu, io, loader, rom, ui, utils, video
+from . import audio, bus, cpu, io, loader, rom, system, ui, utils, video
 
 __all__: list[str] = [
     "cpu",
@@ -16,6 +16,7 @@ __all__: list[str] = [
     "audio",
     "io",
     "rom",
+    "system",
     "loader",
     "ui",
     "utils",
