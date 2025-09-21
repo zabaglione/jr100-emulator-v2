@@ -204,8 +204,12 @@ class Via6522(Addressable):
                     break
 
         # Timer 2 (used minimally on JR-100)
-        if self._timer2_active and not self._timer2_pulse_mode():
-            self._timer2 -= cycles
+        if self._timer2_active:
+            if self._timer2_pulse_mode():
+                decrement = max(1, cycles)
+            else:
+                decrement = cycles
+            self._timer2 -= decrement
             if self._timer2 <= 0:
                 self._set_interrupt(IFR_BIT_T2)
                 if self._timer2_auto_reload:
