@@ -1,6 +1,24 @@
 # JR-100 Emulator version 2
 松下電子工業が1981年に発売した8ビットマイコンJR-100のエミュレータのバージョン2です。
 
+## Python移植（WIP）
+
+このリポジトリには、Java版に加えてPython + Pygameによる移植版（開発中）が含まれます。Python版を試す場合は次の要件を満たしてください。
+
+* Python 3.11 以上
+* `pip install -r requirements-dev.txt` で依存関係（pygame等）を導入
+* JR-100 実機から吸い出した BASIC ROM (`jr100rom.prg`) を用意
+
+### 起動方法（Python版）
+
+```
+python run.py --rom /path/to/jr100rom.prg
+```
+
+`--rom` オプションは必須です。ROMファイルを指定しない、あるいはパスが存在しない場合はアプリケーションがエラーメッセージを表示して終了します。
+
+Java版の手順は以下を参照してください。
+
 # 前提条件
 
 * Java SE 12以上のJava実行環境

@@ -237,7 +237,7 @@ LICENSE                   # MIT（原典継承）
 
 * Python 3.10+、pygame 2.5+、pytest。
 * Windows/macOS/Linux。
-* 初回起動はROM未同梱のためダミー画面を出し、`--rom`指定を促す。
+* JR-100 BASIC ROM (`jr100rom.prg`) を必ず用意し、`python run.py --rom <path>` で起動すること。
 
 ## 10. リスクと軽減策
 
