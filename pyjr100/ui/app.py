@@ -73,7 +73,10 @@ class JR100App:
         self._machine = machine
         renderer = Renderer(self._build_font_set(machine))
 
-        surface_size = (32 * 8 * self._config.scale, 24 * 8 * self._config.scale)
+        display_width = 32 * 8 * self._config.scale
+        display_height = 24 * 8 * self._config.scale
+
+        surface_size = (display_width, display_height)
         flags = pygame.FULLSCREEN if self._config.fullscreen else 0
         screen = pygame.display.set_mode(surface_size, flags)
 

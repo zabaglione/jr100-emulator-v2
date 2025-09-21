@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 from pyjr100.bus import MemorySystem
+from pyjr100.utils import debug_enabled, debug_log
 
 from .opcodes import AddressingMode, Instruction, OPCODE_TABLE
 
@@ -88,9 +89,20 @@ class MB8861:
             self.irq_pending = False
 
         if self.wai_latch and interrupt_cycles == 0:
+            if debug_enabled("cpu"):
+                debug_log("cpu", "wai idle pc=%04x", self.state.pc)
             return 0
 
+        pc_before = self.state.pc
         opcode = self._fetch_byte()
+        if debug_enabled("cpu"):
+            debug_log(
+                "cpu",
+                "pc=%04x opcode=%02x interrupts=%d",
+                pc_before,
+                opcode,
+                interrupt_cycles,
+            )
         instruction = self._decode(opcode)
         handler = getattr(self, instruction.handler, None)
         if handler is None:
@@ -100,6 +112,13 @@ class MB8861:
         instruction_cycles = instruction.cycles + handler_cycles
         total_cycles = interrupt_cycles + instruction_cycles
         self.cycle_count += total_cycles
+        if debug_enabled("cpu"):
+            debug_log(
+                "cpu",
+                "pc=%04x cycles=%d",
+                self.state.pc,
+                total_cycles,
+            )
         return total_cycles
 
     # ------------------------------------------------------------------
@@ -505,6 +524,10 @@ class MB8861:
         self._branch(offset)
         return 0
 
+    def op_branch_brn(self, instruction: Instruction) -> int:
+        self._fetch_operand(instruction.mode)
+        return 0
+
     def op_branch_bhi(self, instruction: Instruction) -> int:
         offset = self._fetch_operand(instruction.mode)
         if not self._get_flag(FLAG_C) and not self._get_flag(FLAG_Z):
@@ -608,6 +631,70 @@ class MB8861:
 
     def op_tpa(self, _: Instruction) -> int:
         self.state.a = (self._compose_cc() | 0xC0) & 0xFF
+        return 0
+
+    def op_orcc(self, instruction: Instruction) -> int:
+        value = self._fetch_operand(instruction.mode) & 0xFF
+        self.state.cc = ((self.state.cc | value) | 0xC0) & 0xFF
+        return 0
+
+    def op_andcc(self, instruction: Instruction) -> int:
+        value = self._fetch_operand(instruction.mode) & 0xFF
+        self.state.cc = ((self.state.cc & value) | 0xC0) & 0xFF
+        return 0
+
+    def op_nim(self, _: Instruction) -> int:
+        mask = self._fetch_byte()
+        offset = self._fetch_byte()
+        address = (self.state.x + offset) & 0xFFFF
+        original = self._read_byte(address)
+        result = mask & original
+        self._write_byte(address, result)
+        self._set_flag(FLAG_Z, result == 0)
+        self._set_flag(FLAG_N, result != 0)
+        self._set_flag(FLAG_V, False)
+        return 0
+
+    def op_oim(self, _: Instruction) -> int:
+        mask = self._fetch_byte()
+        offset = self._fetch_byte()
+        address = (self.state.x + offset) & 0xFFFF
+        original = self._read_byte(address)
+        result = (mask | original) & 0xFF
+        self._write_byte(address, result)
+        self._set_flag(FLAG_Z, result == 0)
+        self._set_flag(FLAG_N, result != 0)
+        self._set_flag(FLAG_V, False)
+        return 0
+
+    def op_xim(self, _: Instruction) -> int:
+        mask = self._fetch_byte()
+        offset = self._fetch_byte()
+        address = (self.state.x + offset) & 0xFFFF
+        original = self._read_byte(address)
+        result = (mask ^ original) & 0xFF
+        self._write_byte(address, result)
+        self._set_flag(FLAG_Z, result == 0)
+        self._set_flag(FLAG_N, result != 0)
+        self._set_flag(FLAG_V, False)
+        return 0
+
+    def op_tmm(self, _: Instruction) -> int:
+        mask = self._fetch_byte() & 0xFF
+        offset = self._fetch_byte()
+        value = self._read_byte((self.state.x + offset) & 0xFFFF)
+        if mask == 0 or value == 0:
+            self._set_flag(FLAG_N, False)
+            self._set_flag(FLAG_Z, True)
+            self._set_flag(FLAG_V, False)
+        elif value == 0xFF:
+            self._set_flag(FLAG_N, False)
+            self._set_flag(FLAG_Z, False)
+            self._set_flag(FLAG_V, True)
+        else:
+            self._set_flag(FLAG_N, True)
+            self._set_flag(FLAG_Z, False)
+            self._set_flag(FLAG_V, False)
         return 0
 
     def op_clc(self, _: Instruction) -> int:
@@ -1026,21 +1113,24 @@ class MB8861:
         self.state.cc = value & 0xFF
 
     def _push_all_registers(self) -> None:
-        sp = self.state.sp
         ccr = (self._compose_cc() | 0xC0) & 0xFF
-        self._write_word((sp - 1) & 0xFFFF, self.state.pc)
-        self._write_word((sp - 3) & 0xFFFF, self.state.x)
-        self._write_byte((sp - 4) & 0xFFFF, self.state.a)
-        self._write_byte((sp - 5) & 0xFFFF, self.state.b)
-        self._write_byte((sp - 6) & 0xFFFF, ccr)
-        self.state.sp = (sp - 7) & 0xFFFF
+        # MB8861は16ビットレジスタをスタックに積む際、下位バイトを先に書き込む。
+        self._push_byte(self.state.pc & 0xFF)
+        self._push_byte((self.state.pc >> 8) & 0xFF)
+        self._push_byte(self.state.x & 0xFF)
+        self._push_byte((self.state.x >> 8) & 0xFF)
+        self._push_byte(self.state.a)
+        self._push_byte(self.state.b)
+        self._push_byte(ccr)
 
     def _pull_all_registers(self) -> None:
-        sp = (self.state.sp + 7) & 0xFFFF
-        ccr = self._read_byte((sp - 6) & 0xFFFF)
+        ccr = self._pull_byte() & 0xFF
         self._apply_cc(ccr)
-        self.state.b = self._read_byte((sp - 5) & 0xFFFF)
-        self.state.a = self._read_byte((sp - 4) & 0xFFFF)
-        self.state.x = self._read_word((sp - 3) & 0xFFFF)
-        self.state.pc = self._read_word((sp - 1) & 0xFFFF)
-        self.state.sp = sp & 0xFFFF
+        self.state.b = self._pull_byte() & 0xFF
+        self.state.a = self._pull_byte() & 0xFF
+        x_hi = self._pull_byte() & 0xFF
+        x_lo = self._pull_byte() & 0xFF
+        self.state.x = ((x_hi << 8) | x_lo) & 0xFFFF
+        pc_hi = self._pull_byte() & 0xFF
+        pc_lo = self._pull_byte() & 0xFF
+        self.state.pc = ((pc_hi << 8) | pc_lo) & 0xFFFF
