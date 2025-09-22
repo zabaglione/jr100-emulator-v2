@@ -36,6 +36,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Launch the emulator in fullscreen mode",
     )
     parser.add_argument(
+        "--extended-ram",
+        action="store_true",
+        help="Enable 32KB main RAM instead of 16KB",
+    )
+    parser.add_argument(
         "--program",
         type=Path,
         help="Optional PROG file to load after reset",
@@ -58,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         program_path=args.program,
         scale=args.scale,
         fullscreen=args.fullscreen,
+        use_extended_ram=args.extended_ram,
     )
     app = JR100App(config)
     try:

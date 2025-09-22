@@ -30,6 +30,7 @@ class AppConfig:
     program_path: Optional[Path] = None
     scale: int = 2
     fullscreen: bool = False
+    use_extended_ram: bool = False
 
 
 class JR100App:
@@ -164,6 +165,7 @@ class JR100App:
 
         machine = create_machine(
             MachineConfig(
+                use_extended_ram=self._config.use_extended_ram,
                 rom_image=None if is_prog else rom_image,
                 via_buzzer=self._handle_buzzer,
                 via_font=self._handle_font_select,

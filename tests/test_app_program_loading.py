@@ -99,3 +99,13 @@ def test_app_accepts_prog_format_rom(tmp_path) -> None:
 
     assert machine.memory.load8(0xE000) == 0x01
     assert machine.cpu.state.pc == 0xE000
+
+
+def test_app_create_machine_with_extended_ram(tmp_path) -> None:
+    rom_path = tmp_path / "rom.bin"
+    rom_path.write_bytes(bytes(0x2000))
+
+    app = JR100App(AppConfig(rom_path=rom_path, use_extended_ram=True))
+    machine = app._create_machine(rom_path)
+
+    assert machine.ram.length == 0x8000
