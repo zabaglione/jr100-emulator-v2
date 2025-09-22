@@ -463,6 +463,26 @@ class Via6522(Addressable):
         self._clear_ifr(IFR_BIT_T1 | IFR_BIT_CA1 | IFR_BIT_T2)
         self._debug("cancel_click_after", ifr=self._ifr)
 
+    # ------------------------------------------------------------------
+    # Debug helpers
+
+    def debug_snapshot(self) -> dict[str, int]:
+        """Return a dictionary of VIA registers for debug overlays."""
+
+        return {
+            "ORB": self._orb,
+            "ORA": self._ora,
+            "DDRB": self._ddr_b,
+            "DDRA": self._ddr_a,
+            "ACR": self._acr,
+            "PCR": self._pcr,
+            "IFR": self._ifr,
+            "IER": self._ier,
+            "PB7": self._pb7,
+            "T1": self._timer1 & 0xFFFF,
+            "T2": self._timer2 & 0xFFFF,
+        }
+
     def _handle_keyboard_event(self, row: int, _mask: int, _pressed: bool) -> None:
         selected = self._ora & 0x0F
         if row == selected:

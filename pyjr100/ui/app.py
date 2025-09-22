@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Optional
 
 from pyjr100.audio import SquareWaveBeeper
+from pyjr100.loader import (
+    BasicTextFormatError,
+    ProgFormatError,
+    load_basic_text_from_path,
+    load_prog,
+    load_prog_from_path,
+)
 from pyjr100.system import Machine, MachineConfig, create_machine
 from pyjr100.video import FontSet, Renderer
 from pyjr100.video.font import GLYPH_BYTES
@@ -37,6 +44,9 @@ class JR100App:
         self._buzzer_frequency = 0.0
         self._beeper: SquareWaveBeeper | None = None
         self._machine: Machine | None = None
+        self._debug_overlay = debug_enabled("overlay")
+        self._overlay_columns = 18
+        self._overlay_font = None
 
     def run(self) -> None:
         try:
@@ -78,10 +88,13 @@ class JR100App:
         self._machine = machine
         renderer = Renderer(self._build_font_set(machine))
 
+        self._wait_for_basic_ready(machine)
+
         display_width = 32 * 8 * self._config.scale
         display_height = 24 * 8 * self._config.scale
+        overlay_width = self._overlay_columns * 8 * self._config.scale if self._debug_overlay else 0
 
-        surface_size = (display_width, display_height)
+        surface_size = (display_width + overlay_width, display_height)
         flags = pygame.FULLSCREEN if self._config.fullscreen else 0
         screen = pygame.display.set_mode(surface_size, flags)
 
@@ -91,8 +104,6 @@ class JR100App:
 
         if self._config.program_path is not None:
             self._load_program(machine, self._config.program_path)
-
-        self._initialize_screen(machine)
 
         while self._running:
             for event in pygame.event.get():
@@ -118,22 +129,17 @@ class JR100App:
 
             pygame_surface = frame.to_surface()
             screen.blit(pygame_surface, (0, 0))
+
+            if self._debug_overlay and overlay_width > 0:
+                overlay_surface = self._draw_overlay(pygame, machine, display_height, overlay_width)
+                if overlay_surface is not None:
+                    screen.blit(overlay_surface, (display_width, 0))
             pygame.display.flip()
             clock.tick(_FRAME_RATE)
 
         if self._beeper is not None:
             self._beeper.shutdown()
         pygame.quit()
-
-    def _initialize_screen(self, machine) -> None:
-        base = machine.video_ram.get_start_address()
-        message = "JR-100 PY PORT"
-        for idx, char in enumerate(message):
-            machine.memory.store8(base + idx, ord(char) & 0x7F)
-        # Fill the rest of the line with spaces.
-        for idx in range(len(message), 32):
-            machine.memory.store8(base + idx, 0x20)
-
 
     def _handle_key_event(self, pygame, key_code: int, *, pressed: bool) -> None:
         if self._keyboard is None:
@@ -170,24 +176,101 @@ class JR100App:
         return machine
 
     def _load_program(self, machine: Machine, program_path: Path) -> None:
-        from pyjr100.loader import ProgFormatError, load_prog_from_path
-
         try:
             load_prog_from_path(program_path, machine.memory)
         except FileNotFoundError as exc:
             raise RuntimeError(f"Program file not found: {program_path}") from exc
-        except ProgFormatError as exc:
-            raise RuntimeError(f"Failed to load PROG file {program_path}: {exc}") from exc
+        except ProgFormatError as prog_error:
+            try:
+                load_basic_text_from_path(program_path, machine.memory)
+            except BasicTextFormatError as text_error:
+                raise RuntimeError(
+                    f"Failed to load program {program_path}: PROG error={prog_error}; BASIC error={text_error}"
+                ) from text_error
 
     def _load_rom_prog(self, machine: Machine, rom_image: bytes, rom_path: Path) -> None:
-        from pyjr100.loader import ProgFormatError, load_prog
-
         try:
             load_prog(io.BytesIO(rom_image), machine.memory)
         except ProgFormatError as exc:
             raise RuntimeError(f"Failed to load ROM PROG {rom_path}: {exc}") from exc
 
         machine.cpu.reset()
+
+    def _wait_for_basic_ready(self, machine: Machine, *, max_cycles: int = 2_000_000) -> None:
+        start_ptr = _read_pointer(machine, 0x0006)
+        if start_ptr != 0:
+            return
+
+        cycles = 0
+        while cycles < max_cycles:
+            executed = machine.cpu.step()
+            if executed == 0:
+                executed = 1
+            machine.via.tick(executed)
+            cycles += executed
+            start_ptr = _read_pointer(machine, 0x0006)
+            if start_ptr != 0:
+                return
+
+        raise RuntimeError("JR-100 BASIC initialisation timed out")
+
+    def _draw_overlay(self, pygame, machine: Machine, height: int, width: int):
+        surface = pygame.Surface((width, height))
+        surface.fill((0, 0, 0))
+
+        font_size = max(8, 6 * self._config.scale)
+        if self._overlay_font is None or self._overlay_font[0] != font_size:
+            pygame.font.init()
+            font_name = pygame.font.match_font("menlo,dejavusansmono,couriernew,consolas,monospace")
+            if not font_name:
+                font_name = pygame.font.get_default_font()
+            font_obj = pygame.font.Font(font_name, font_size)
+            self._overlay_font = (font_size, font_obj)
+        else:
+            font_obj = self._overlay_font[1]
+        color = (255, 255, 255)
+        line_height = font_size + 2
+
+        label_width = 12
+
+        def fmt(label: str, value: str) -> str:
+            return f"{label:<{label_width}}: {value}"
+
+        lines: list[str] = []
+        cpu_state = machine.cpu.state
+        lines.append(fmt("CPU PC", f"{cpu_state.pc:04X}"))
+        lines.append(fmt("CPU SP", f"{cpu_state.sp:04X}"))
+        lines.append(fmt("CPU IX", f"{cpu_state.x:04X}"))
+        lines.append(fmt("CPU A", f"{cpu_state.a:02X}"))
+        lines.append(fmt("CPU B", f"{cpu_state.b:02X}"))
+        lines.append(fmt("CPU CC", f"{cpu_state.cc:02X}"))
+        flag_defs = (("H", 0x20), ("I", 0x10), ("N", 0x08), ("Z", 0x04), ("V", 0x02), ("C", 0x01))
+        flags = "".join(flag for flag, mask in flag_defs if cpu_state.cc & mask)
+        lines.append(fmt("CPU FLAGS", flags or "-"))
+
+        via_snapshot = machine.via.debug_snapshot()
+        lines.append(" ")
+        lines.append(fmt("VIA ORB", f"{via_snapshot['ORB']:02X}"))
+        lines.append(fmt("VIA ORA", f"{via_snapshot['ORA']:02X}"))
+        lines.append(fmt("VIA DDRB", f"{via_snapshot['DDRB']:02X}"))
+        lines.append(fmt("VIA DDRA", f"{via_snapshot['DDRA']:02X}"))
+        lines.append(fmt("VIA ACR", f"{via_snapshot['ACR']:02X}"))
+        lines.append(fmt("VIA PCR", f"{via_snapshot['PCR']:02X}"))
+        lines.append(fmt("VIA IFR", f"{via_snapshot['IFR']:02X}"))
+        lines.append(fmt("VIA IER", f"{via_snapshot['IER']:02X}"))
+        lines.append(fmt("VIA T1", f"{via_snapshot['T1']:04X}"))
+        lines.append(fmt("VIA T2", f"{via_snapshot['T2']:04X}"))
+        lines.append(fmt("VIA PB7", f"{via_snapshot['PB7']}"))
+
+        y = 4
+        for text in lines:
+            rendered = font_obj.render(text, False, color)
+            surface.blit(rendered, (4, y))
+            y += line_height
+            if y > height:
+                break
+
+        return surface
 
     def _build_font_set(self, machine: Machine) -> FontSet:
         font_data = bytearray(128 * GLYPH_BYTES)
@@ -414,6 +497,12 @@ def _canonical_name(name: str) -> str | None:
 
 def _is_prog_image(image: bytes) -> bool:
     return len(image) >= 4 and image[:4] == b"PROG"
+
+
+def _read_pointer(machine: Machine, address: int) -> int:
+    high = machine.memory.load8(address) & 0xFF
+    low = machine.memory.load8(address + 1) & 0xFF
+    return (high << 8) | low
 
 
 _CPU_FREQUENCY = 894_886  # Hz

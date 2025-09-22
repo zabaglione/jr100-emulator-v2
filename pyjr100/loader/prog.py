@@ -158,6 +158,11 @@ class _ProgLoader:
             self._memory.store8(start_addr + offset, value)
 
     def _write_basic_trailer(self, end_addr: int) -> None:
+        start_addr = ADDRESS_START_OF_BASIC_PROGRAM
+        for offset, value in ((0x0002, start_addr), (0x0004, start_addr)):
+            self._memory.store8(offset, (value >> 8) & 0xFF)
+            self._memory.store8(offset + 1, value & 0xFF)
+
         sentinel_base = end_addr + 1
         for offset in range(3):
             self._memory.store8(sentinel_base + offset, SENTINEL_VALUE)

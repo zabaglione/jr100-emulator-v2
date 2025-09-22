@@ -58,6 +58,33 @@ def test_app_load_program(tmp_path) -> None:
         assert machine.memory.load8(base + offset) == value
 
 
+def test_app_load_basic_text_program(tmp_path) -> None:
+    rom_path = tmp_path / "rom.bin"
+    rom_path.write_bytes(bytes(0x2000))
+
+    basic_path = tmp_path / "sample.bas"
+    basic_path.write_text("10 print \"hi\"\n20 end\n")
+
+    config = AppConfig(rom_path=rom_path, program_path=basic_path)
+    machine = create_machine(MachineConfig(rom_image=rom_path.read_bytes()))
+    app = JR100App(config)
+
+    app._load_program(machine, basic_path)
+
+    start = 0x0246
+    assert machine.memory.load8(start) == 0x00
+    assert machine.memory.load8(start + 1) == 0x0A
+    stored = bytes(
+        machine.memory.load8(start + 2 + idx)
+        for idx in range(10)
+    )
+    assert stored == b"PRINT \"HI\""
+
+    end_pointer = (machine.memory.load8(0x0006) << 8) | machine.memory.load8(0x0007)
+    assert machine.memory.load8(end_pointer - 1) == 0xDF
+    assert (machine.memory.load8(0x0002) << 8 | machine.memory.load8(0x0003)) == start
+    assert (machine.memory.load8(0x0004) << 8 | machine.memory.load8(0x0005)) == start
+
 def test_app_accepts_prog_format_rom(tmp_path) -> None:
     payload = bytearray(0x2000)
     payload[0] = 0x01  # NOP opcode

@@ -64,6 +64,9 @@ def test_load_prog_v2_basic_section() -> None:
     for offset in range(3):
         assert ram.load8(end_addr + 1 + offset) == 0xDF
 
+    assert (ram.load8(0x0002) << 8 | ram.load8(0x0003)) == basic_start
+    assert (ram.load8(0x0004) << 8 | ram.load8(0x0005)) == basic_start
+
     assert ram.load8(0x0006) == (end_addr >> 8) & 0xFF
     assert ram.load8(0x0007) == end_addr & 0xFF
     assert ram.load8(0x0008) == ((end_addr + 1) >> 8) & 0xFF
