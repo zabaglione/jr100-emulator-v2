@@ -120,6 +120,15 @@ class Keyboard:
     def add_listener(self, listener: Callable[[int, int, bool], None]) -> None:
         self._listeners.append(listener)
 
+    def is_pressed(self, key_name: str) -> bool:
+        """Return True if the logical key is currently asserted."""
+
+        row_mask = self._lookup(key_name)
+        if row_mask is None:
+            return False
+        row, mask = row_mask
+        return (self._matrix[row] & mask) != 0
+
     def _lookup(self, key_name: str) -> tuple[int, int] | None:
         name = key_name.lower()
         name = ALIAS_TABLE.get(name, name)

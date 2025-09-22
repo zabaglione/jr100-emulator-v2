@@ -48,6 +48,7 @@ class MB8861:
 
     memory: MemorySystem
     instruction_table: Sequence[Instruction | None] = field(default=OPCODE_TABLE)
+    strict_illegal: bool = True
 
     RESET_VECTOR: int = 0xFFFE
     NMI_VECTOR: int = 0xFFFC
@@ -103,7 +104,12 @@ class MB8861:
                 opcode,
                 interrupt_cycles,
             )
-        instruction = self._decode(opcode)
+        instruction = self.instruction_table[opcode]
+        if instruction is None:
+            total_cycles = interrupt_cycles + self._handle_illegal(opcode)
+            self.cycle_count += total_cycles
+            return total_cycles
+
         handler = getattr(self, instruction.handler, None)
         if handler is None:
             raise CPUError(f"handler '{instruction.handler}' not implemented")
@@ -120,6 +126,13 @@ class MB8861:
                 total_cycles,
             )
         return total_cycles
+
+    def _handle_illegal(self, opcode: int) -> int:
+        if self.strict_illegal:
+            raise IllegalOpcodeError(f"illegal opcode {opcode:#04x}")
+        if debug_enabled("cpu"):
+            debug_log("cpu", "illegal opcode=%02x treated as NOP", opcode)
+        return 1
 
     # ------------------------------------------------------------------
     # Instruction handlers
@@ -828,12 +841,6 @@ class MB8861:
         self._write_byte(address, result)
         return result
 
-    def _decode(self, opcode: int) -> Instruction:
-        instruction = self.instruction_table[opcode]
-        if instruction is None:
-            raise IllegalOpcodeError(f"illegal opcode {opcode:#04x}")
-        return instruction
-
     # ------------------------------------------------------------------
     # Addressing helpers
 
@@ -1114,10 +1121,11 @@ class MB8861:
 
     def _push_all_registers(self) -> None:
         ccr = (self._compose_cc() | 0xC0) & 0xFF
-        self._push_byte((self.state.pc >> 8) & 0xFF)
+        # MB8861は16ビットレジスタをスタックに積む際、下位バイトを先に書き込む。
         self._push_byte(self.state.pc & 0xFF)
-        self._push_byte((self.state.x >> 8) & 0xFF)
+        self._push_byte((self.state.pc >> 8) & 0xFF)
         self._push_byte(self.state.x & 0xFF)
+        self._push_byte((self.state.x >> 8) & 0xFF)
         self._push_byte(self.state.a)
         self._push_byte(self.state.b)
         self._push_byte(ccr)
@@ -1127,9 +1135,9 @@ class MB8861:
         self._apply_cc(ccr)
         self.state.b = self._pull_byte() & 0xFF
         self.state.a = self._pull_byte() & 0xFF
-        x_lo = self._pull_byte()
-        x_hi = self._pull_byte()
+        x_hi = self._pull_byte() & 0xFF
+        x_lo = self._pull_byte() & 0xFF
         self.state.x = ((x_hi << 8) | x_lo) & 0xFFFF
-        pc_lo = self._pull_byte()
-        pc_hi = self._pull_byte()
+        pc_hi = self._pull_byte() & 0xFF
+        pc_lo = self._pull_byte() & 0xFF
         self.state.pc = ((pc_hi << 8) | pc_lo) & 0xFFFF

@@ -23,6 +23,10 @@ python run.py --rom /path/to/jr100rom.prg
 python run.py --rom /path/to/jr100rom.prg --program /path/to/sample.prog
 ```
 
+#### サウンド出力
+
+Python版はVIAタイマ1からのビープを`pygame.mixer`経由で再生します。実行環境にオーディオデバイスがない、あるいはミキサ初期化が失敗した場合は自動的に無音モードへフォールバックします。動作確認やトラブルシュートを行う際は環境変数`JR100_DEBUG=audio`を指定すると、ミキサ初期化やビープのオン/オフをログで確認できます。
+
 Java版の手順は以下を参照してください。
 
 # 前提条件

@@ -109,7 +109,7 @@ def create_machine(config: MachineConfig) -> Machine:
     memory.register_memory(rom)
 
     keyboard = Keyboard()
-    cpu = MB8861(memory)
+    cpu = MB8861(memory, strict_illegal=False)
     cpu.reset()
 
     via = Via6522(

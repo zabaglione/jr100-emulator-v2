@@ -100,9 +100,15 @@ class _ProgLoader:
             if section_id is None:
                 break
 
-            section_length = self._read_u32()
+            length_bytes = self._stream.read(4)
+            if len(length_bytes) == 0 and section_id == 0:
+                break
+            if len(length_bytes) < 4:
+                raise ProgFormatError("Unexpected end of PROG file")
+            section_length = struct.unpack("<I", length_bytes)[0]
             section_payload = self._read_exact(section_length)
             reader = io.BytesIO(section_payload)
+            payload_size = len(section_payload)
 
             if section_id == SECTION_PNAM:
                 program.name = self._read_string_from(reader, PROG_MAX_PROGRAM_NAME_LENGTH)
@@ -128,7 +134,14 @@ class _ProgLoader:
                 self._validate_bounds(start_addr, data_length)
                 payload = self._read_exact_from(reader, data_length)
                 self._write_block(start_addr, payload)
-                comment = self._read_string_from(reader, PROG_MAX_COMMENT_LENGTH)
+
+                remaining = payload_size - reader.tell()
+                comment = ""
+                if remaining > 0:
+                    if remaining < 4:
+                        raise ProgFormatError("PBIN section truncated")
+                    comment = self._read_string_from(reader, PROG_MAX_COMMENT_LENGTH)
+
                 program.add_region(start_addr, start_addr + data_length - 1, comment)
 
                 binary_sections += 1
@@ -217,4 +230,3 @@ class _ProgLoader:
             raise ProgFormatError("String exceeds maximum length in section")
         data = self._read_exact_from(reader, length)
         return data.decode("utf-8") if length else ""
-

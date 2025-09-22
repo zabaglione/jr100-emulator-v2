@@ -70,6 +70,7 @@ class Via6522(Addressable):
         self._timer2_auto_reload = False
         self._key_timer_period = 1
         self._key_irq_pending = False
+        self._key_release_countdown = 0
 
         # PB7 mirrors PB6 through JR-100 wiring
         self._pb7 = 1
@@ -170,9 +171,15 @@ class Via6522(Addressable):
         elif offset == 0x0B:
             self._acr = value
             self._debug("acr", acr=self._acr)
+            if (self._acr & 0xC0) != 0xC0:
+                self._stop_key_click()
+                self._pb7 = 1
+                self._sync_port_b()
+                self._update_buzzer(False)
         elif offset == 0x0C:
             self._pcr = value
             self._debug("pcr", pcr=self._pcr)
+            self._reset_keyboard_handshake()
         elif offset == 0x0D:
             self._clear_ifr(value)
         elif offset == 0x0E:
@@ -202,8 +209,12 @@ class Via6522(Addressable):
                     break
 
         # Timer 2 (used minimally on JR-100)
-        if self._timer2_active and not self._timer2_pulse_mode():
-            self._timer2 -= cycles
+        if self._timer2_active:
+            if self._timer2_pulse_mode():
+                decrement = max(1, cycles)
+            else:
+                decrement = cycles
+            self._timer2 -= decrement
             if self._timer2 <= 0:
                 self._set_interrupt(IFR_BIT_T2)
                 if self._timer2_auto_reload:
@@ -212,6 +223,10 @@ class Via6522(Addressable):
                 else:
                     self._timer2 = self._timer2_latch or 0x10000
                     self._timer2_active = False
+        if self._key_release_countdown > 0:
+            self._key_release_countdown = max(0, self._key_release_countdown - cycles)
+            if self._key_release_countdown == 0:
+                self._reset_keyboard_handshake()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -239,7 +254,8 @@ class Via6522(Addressable):
         self._update_keyboard_matrix()
 
     def _write_port_b(self, value: int) -> None:
-        self._orb = (self._orb & ~self._ddr_b) | (value & self._ddr_b)
+        outputs_mask = self._ddr_b | 0xE0  # PB5-7 behave as outputs on the JR-100
+        self._orb = (self._orb & ~outputs_mask) | (value & outputs_mask)
         self._pb7 = (self._orb >> 7) & 0x01
         self._debug("write_pb", orb=self._orb, pb7=self._pb7)
         self._sync_port_b()
@@ -274,7 +290,10 @@ class Via6522(Addressable):
         self._pb7 = 0
         self._sync_port_b()
         self._clear_timer1_interrupt()
-        self._update_buzzer(True)
+        if (self._acr & 0xC0) == 0xC0:
+            self._update_buzzer(True)
+        else:
+            self._update_buzzer(False)
         self._debug("t1_load", latch=self._timer1_latch, active=True)
 
     def _timer1_reload(self) -> int:
@@ -404,6 +423,11 @@ class Via6522(Addressable):
             if self._ca2_handshake_enabled():
                 self._set_ca2(False)
                 self._ca2_latched = True
+        else:
+            # CA1が非アクティブに戻っても、6522ではIFRのハンドシェイクビットは
+            # CPUが手動でクリアするまで保持される。Python版でも同じ挙動にするため
+            # ここではタイマ2割り込みを自動的に解放しない。
+            self._key_irq_pending = bool(self._ifr & IFR_BIT_T2)
 
     def _set_ca2(self, high: bool) -> None:
         level = 1 if high else 0
@@ -428,7 +452,16 @@ class Via6522(Addressable):
         self._debug("t1_stop", pb7=self._pb7)
 
     def cancel_key_click(self) -> None:
+        self._debug("cancel_click_before", ifr=self._ifr)
         self._stop_key_click()
+        self._timer2_auto_reload = False
+        self._timer2_active = False
+        self._key_release_countdown = 0
+        self._timer2 = 0
+        self._clear_timer1_interrupt()
+        self._clear_timer2_interrupt()
+        self._clear_ifr(IFR_BIT_T1 | IFR_BIT_CA1 | IFR_BIT_T2)
+        self._debug("cancel_click_after", ifr=self._ifr)
 
     def _handle_keyboard_event(self, row: int, _mask: int, _pressed: bool) -> None:
         selected = self._ora & 0x0F
@@ -438,8 +471,7 @@ class Via6522(Addressable):
             self._update_ca1(self._any_keys_pressed())
         self._update_ca1(self._any_keys_pressed())
         if not self._any_keys_pressed():
-            self._timer2_auto_reload = False
-            self._key_irq_pending = False
+            self._key_release_countdown = max(self._key_release_countdown, self._key_timer_period)
 
     def _any_keys_pressed(self) -> bool:
         return any(value & 0x1F for value in self._keyboard.snapshot())
@@ -455,6 +487,14 @@ class Via6522(Addressable):
             self._timer2 = period
         self._timer2_active = True
         self._clear_timer2_interrupt()
+        self._key_release_countdown = period
+
+    def _reset_keyboard_handshake(self) -> None:
+        self._timer2_auto_reload = False
+        self._timer2_active = False
+        self._key_irq_pending = False
+        self._clear_timer1_interrupt()
+        self._clear_ifr(IFR_BIT_CB2)
 
     def _debug(self, event: str, **fields) -> None:
         if not debug_enabled("via"):

@@ -111,6 +111,38 @@ def test_load_prog_v2_binary_sections() -> None:
         assert ram.load8(start_addr + index) == value
 
 
+def test_load_prog_v2_binary_section_without_comment() -> None:
+    ms, ram = make_memory_system()
+
+    data = bytes(range(1, 9))
+    start_addr = 0x6000
+
+    buf = io.BytesIO()
+    buf.write(b"PROG")
+    buf.write(struct.pack("<I", 2))
+
+    payload = (
+        struct.pack("<I", start_addr)
+        + struct.pack("<I", len(data))
+        + data
+    )
+    buf.write(b"PBIN")
+    buf.write(struct.pack("<I", len(payload)))
+    buf.write(payload)
+
+    buf.seek(0)
+    program = load_prog(buf, ms)
+
+    assert len(program.regions) == 1
+    region = program.regions[0]
+    assert region.start == start_addr
+    assert region.end == start_addr + len(data) - 1
+    assert region.comment == ""
+
+    for index, value in enumerate(data):
+        assert ram.load8(start_addr + index) == value
+
+
 def test_load_prog_v1_binary_flag() -> None:
     ms, ram = make_memory_system()
 
@@ -149,4 +181,3 @@ def test_load_prog_invalid_magic_raises() -> None:
 
     with pytest.raises(ProgFormatError):
         load_prog(buf, ms)
-
