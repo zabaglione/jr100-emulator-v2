@@ -69,8 +69,8 @@ class Renderer:
         for row in range(VRAM_HEIGHT):
             for col in range(VRAM_WIDTH):
                 value = vram[row * VRAM_WIDTH + col]
-                glyph = self.font.get_glyph(value & 0x7F, user_ram=user_ram, plane=plane)
-                inverted = (value & 0x80) != 0
+                glyph = self.font.get_glyph(value, user_ram=user_ram, plane=plane)
+                inverted = plane == 0 and (value & 0x80) != 0
                 self._blit_glyph(
                     pixels,
                     width,
