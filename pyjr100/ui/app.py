@@ -48,6 +48,9 @@ class JR100App:
         self._debug_overlay = debug_enabled("overlay")
         self._overlay_columns = 18
         self._overlay_font = None
+        self._perf_enabled = debug_enabled("perf")
+        self._perf_last_time = 0.0
+        self._perf_frame = 0
 
     def run(self) -> None:
         try:
@@ -106,6 +109,8 @@ class JR100App:
         if self._config.program_path is not None:
             self._load_program(machine, self._config.program_path)
 
+        import time
+
         while self._running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -116,6 +121,9 @@ class JR100App:
                     self._handle_key_event(pygame, event.key, pressed=True)
                 elif event.type == pygame.KEYUP:
                     self._handle_key_event(pygame, event.key, pressed=False)
+
+            frame_start_cycles = machine.cpu.cycle_count
+            frame_start_time = time.perf_counter()
 
             self._step_cpu(machine)
 
@@ -136,6 +144,23 @@ class JR100App:
                 if overlay_surface is not None:
                     screen.blit(overlay_surface, (display_width, 0))
             pygame.display.flip()
+
+            frame_end_time = time.perf_counter()
+            frame_cycles = machine.cpu.cycle_count - frame_start_cycles
+            frame_duration = frame_end_time - frame_start_time
+
+            if self._perf_enabled and frame_duration > 0:
+                self._perf_frame += 1
+                effective_khz = (frame_cycles / frame_duration) / 1000.0
+                debug_log(
+                    "perf",
+                    "frame=%d cycles=%d frame_ms=%.3f effective_khz=%.2f",
+                    self._perf_frame,
+                    frame_cycles,
+                    frame_duration * 1000.0,
+                    effective_khz,
+                )
+
             clock.tick(_FRAME_RATE)
 
         if self._beeper is not None:

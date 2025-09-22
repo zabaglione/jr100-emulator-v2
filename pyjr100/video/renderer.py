@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Iterable, Tuple
 
 from .font import FONT_HEIGHT, FONT_WIDTH, FontSet
 from .palette import MONOCHROME, RGBColor, validate_palette
@@ -48,6 +48,11 @@ class Renderer:
     def __init__(self, font: FontSet, palette=MONOCHROME) -> None:
         self.font = font
         self.palette = validate_palette(palette)
+        self._buffer: bytearray | None = None
+        self._prev_vram: bytearray | None = None
+        self._prev_scale: int | None = None
+        self._prev_plane: int | None = None
+        self._prev_user_ram: bytes | None = None
 
     def render(
         self,
@@ -64,24 +69,116 @@ class Renderer:
 
         width = VRAM_WIDTH * FONT_WIDTH * scale
         height = VRAM_HEIGHT * FONT_HEIGHT * scale
-        pixels = bytearray(width * height * 3)
+        cells = VRAM_WIDTH * VRAM_HEIGHT
 
-        for row in range(VRAM_HEIGHT):
-            for col in range(VRAM_WIDTH):
-                value = vram[row * VRAM_WIDTH + col]
-                glyph = self.font.get_glyph(value, user_ram=user_ram, plane=plane)
-                inverted = plane == 0 and (value & 0x80) != 0
-                self._blit_glyph(
-                    pixels,
+        full_refresh = False
+        buffer = self._buffer
+        if buffer is None or self._prev_scale != scale:
+            buffer = bytearray(width * height * 3)
+            self._buffer = buffer
+            self._prev_vram = bytearray(cells)
+            self._prev_scale = scale
+            full_refresh = True
+
+        assert buffer is not None  # for type checkers
+        prev_vram = self._prev_vram
+        if prev_vram is None or len(prev_vram) != cells:
+            prev_vram = bytearray(cells)
+            self._prev_vram = prev_vram
+            full_refresh = True
+
+        current_user_ram = bytes(user_ram) if user_ram is not None else None
+        if self._prev_plane != plane:
+            full_refresh = True
+        if current_user_ram != self._prev_user_ram and plane == 1:
+            full_refresh = True
+
+        if full_refresh:
+            prev_vram[:cells] = vram[:cells]
+            self._render_full(
+                buffer,
+                width,
+                vram,
+                user_ram,
+                plane,
+                scale,
+            )
+        else:
+            dirty: list[int] = []
+            for index in range(cells):
+                value = vram[index]
+                if prev_vram[index] != value:
+                    prev_vram[index] = value
+                    dirty.append(index)
+            if dirty:
+                self._render_cells(
+                    buffer,
                     width,
-                    col,
-                    row,
-                    glyph,
-                    inverted=inverted,
-                    scale=scale,
+                    dirty,
+                    vram,
+                    user_ram,
+                    plane,
+                    scale,
                 )
 
-        return RenderResult(width=width, height=height, scale=scale, pixels=pixels)
+        self._prev_plane = plane
+        self._prev_user_ram = current_user_ram
+
+        return RenderResult(width=width, height=height, scale=scale, pixels=buffer)
+
+    def _render_full(
+        self,
+        pixels: bytearray,
+        stride: int,
+        vram: bytes,
+        user_ram: bytes | None,
+        plane: int,
+        scale: int,
+    ) -> None:
+        for index in range(VRAM_WIDTH * VRAM_HEIGHT):
+            col = index % VRAM_WIDTH
+            row = index // VRAM_WIDTH
+            value = vram[index]
+            self._render_cell(pixels, stride, col, row, value, user_ram, plane, scale)
+
+    def _render_cells(
+        self,
+        pixels: bytearray,
+        stride: int,
+        dirty: Iterable[int],
+        vram: bytes,
+        user_ram: bytes | None,
+        plane: int,
+        scale: int,
+    ) -> None:
+        for index in dirty:
+            col = index % VRAM_WIDTH
+            row = index // VRAM_WIDTH
+            value = vram[index]
+            self._render_cell(pixels, stride, col, row, value, user_ram, plane, scale)
+
+    def _render_cell(
+        self,
+        pixels: bytearray,
+        stride: int,
+        col: int,
+        row: int,
+        value: int,
+        user_ram: bytes | None,
+        plane: int,
+        scale: int,
+    ) -> None:
+        glyph = self.font.get_glyph(value, user_ram=user_ram, plane=plane)
+        inverted = plane == 0 and (value & 0x80) != 0
+        self._blit_glyph(
+            pixels,
+            stride,
+            col,
+            row,
+            glyph,
+            inverted=inverted,
+            scale=scale,
+        )
 
     def _blit_glyph(
         self,
@@ -89,42 +186,34 @@ class Renderer:
         stride: int,
         col: int,
         row: int,
-        glyph: bytes | Tuple[int, ...],
+        glyph: Iterable[int],
         *,
         inverted: bool,
         scale: int,
     ) -> None:
-        fg = self.palette[1]
-        bg = self.palette[0]
+        fg_r, fg_g, fg_b = self.palette[1]
+        bg_r, bg_g, bg_b = self.palette[0]
+        pixel_stride = stride * 3
+        base_x = col * FONT_WIDTH * scale
+        base_y = row * FONT_HEIGHT * scale
 
-        for gy, line in enumerate(glyph):
-            line_value = line
+        for gy, raw_line in enumerate(glyph):
+            line_value = raw_line & 0xFF
             if inverted:
                 line_value ^= 0xFF
-            for gx in range(FONT_WIDTH):
-                mask = 1 << (7 - gx)
-                color = fg if line_value & mask else bg
-                self._write_scaled_pixel(
-                    pixels,
-                    stride,
-                    col * FONT_WIDTH + gx,
-                    row * FONT_HEIGHT + gy,
-                    color,
-                    scale,
-                )
-
-    def _write_scaled_pixel(
-        self,
-        pixels: bytearray,
-        stride: int,
-        x: int,
-        y: int,
-        color: RGBColor,
-        scale: int,
-    ) -> None:
-        r, g, b = color
-        for dy in range(scale):
-            row_index = (y * scale + dy) * stride
-            for dx in range(scale):
-                pixel_index = ((x * scale + dx) + row_index) * 3
-                pixels[pixel_index : pixel_index + 3] = bytes((r, g, b))
+            dest_y = base_y + gy * scale
+            for sy in range(scale):
+                offset = (dest_y + sy) * pixel_stride + base_x * 3
+                pos = offset
+                mask = 0x80
+                for _ in range(FONT_WIDTH):
+                    if line_value & mask:
+                        color_r, color_g, color_b = fg_r, fg_g, fg_b
+                    else:
+                        color_r, color_g, color_b = bg_r, bg_g, bg_b
+                    for _ in range(scale):
+                        pixels[pos] = color_r
+                        pixels[pos + 1] = color_g
+                        pixels[pos + 2] = color_b
+                        pos += 3
+                    mask >>= 1
