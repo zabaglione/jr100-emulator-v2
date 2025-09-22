@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Mapping
+from typing import Callable, Dict, Mapping
+
+from pyjr100.utils import debug_enabled, debug_log
 
 
 KEY_MATRIX_TEMPLATE: Mapping[str, tuple[int, int]] = {
@@ -71,27 +73,42 @@ class Keyboard:
 
     _matrix: bytearray = field(default_factory=lambda: bytearray(9))
     _active: Dict[tuple[int, int], int] = field(default_factory=dict)
+    _listeners: list[Callable[[int, int, bool], None]] = field(default_factory=list)
 
     def press(self, key_name: str) -> None:
         row_mask = self._lookup(key_name)
         if row_mask is None:
+            if debug_enabled("input"):
+                debug_log("input", "unmapped_press=%s", key_name)
             return
         row, mask = row_mask
+        before = self._matrix[row]
         self._matrix[row] |= mask
         self._active[(row, mask)] = self._active.get((row, mask), 0) + 1
+        if debug_enabled("input"):
+            debug_log("input", "matrix_press row=%d mask=%02x", row, mask)
+        if self._matrix[row] != before:
+            self._notify_listeners(row, mask, True)
 
     def release(self, key_name: str) -> None:
         row_mask = self._lookup(key_name)
         if row_mask is None:
+            if debug_enabled("input"):
+                debug_log("input", "unmapped_release=%s", key_name)
             return
         row, mask = row_mask
         key = (row, mask)
         count = self._active.get(key, 0)
+        before = self._matrix[row]
         if count <= 1:
             self._matrix[row] &= ~mask & 0x1F
             self._active.pop(key, None)
         else:
             self._active[key] = count - 1
+        if debug_enabled("input"):
+            debug_log("input", "matrix_release row=%d mask=%02x count=%d", row, mask, self._active.get(key,0))
+        if self._matrix[row] != before:
+            self._notify_listeners(row, mask, False)
 
     def reset(self) -> None:
         self._matrix[:] = b"\x00" * len(self._matrix)
@@ -100,7 +117,23 @@ class Keyboard:
     def snapshot(self) -> tuple[int, ...]:
         return tuple(self._matrix)
 
+    def add_listener(self, listener: Callable[[int, int, bool], None]) -> None:
+        self._listeners.append(listener)
+
+    def is_pressed(self, key_name: str) -> bool:
+        """Return True if the logical key is currently asserted."""
+
+        row_mask = self._lookup(key_name)
+        if row_mask is None:
+            return False
+        row, mask = row_mask
+        return (self._matrix[row] & mask) != 0
+
     def _lookup(self, key_name: str) -> tuple[int, int] | None:
         name = key_name.lower()
         name = ALIAS_TABLE.get(name, name)
         return KEY_MATRIX_TEMPLATE.get(name)
+
+    def _notify_listeners(self, row: int, mask: int, pressed: bool) -> None:
+        for listener in tuple(self._listeners):
+            listener(row, mask, pressed)

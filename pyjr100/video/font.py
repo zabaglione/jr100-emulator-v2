@@ -27,15 +27,15 @@ class FontSet:
     def get_glyph(self, code: int, user_ram: bytes | None = None, plane: int = 0) -> Iterable[int]:
         """Return an iterable of eight bytes representing the glyph bitmap."""
 
-        # Plane 1 uses user RAM for characters >= 0x80; others reuse ROM.
-        if code >= 128:
-            if user_ram is None:
-                return [0] * GLYPH_BYTES
+        if plane == 1 and user_ram is not None:
+            offset = code * GLYPH_BYTES
+            if offset + GLYPH_BYTES <= len(user_ram):
+                return user_ram[offset : offset + GLYPH_BYTES]
+
+        if code >= 128 and user_ram is not None:
             offset = (code - 128) * GLYPH_BYTES
-            if offset + GLYPH_BYTES > len(user_ram):
-                return [0] * GLYPH_BYTES
-            return user_ram[offset : offset + GLYPH_BYTES]
+            if offset + GLYPH_BYTES <= len(user_ram):
+                return user_ram[offset : offset + GLYPH_BYTES]
 
         offset = code * GLYPH_BYTES
         return self.rom[offset : offset + GLYPH_BYTES]
-

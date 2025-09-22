@@ -1,3 +1,8 @@
-"""Placeholder module for the JR-100 Python port."""
+"""Utility helpers for the JR-100 Python port."""
 
-__all__: list[str] = []
+from .debug import debug_enabled, debug_log
+
+__all__ = [
+    "debug_enabled",
+    "debug_log",
+]

@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from pyjr100.bus import Addressable, Memory, MemorySystem, UnmappedMemory
+from pyjr100.bus import Addressable, Memory, MemorySystem, UnmappedMemory, Via6522
+from pyjr100.bus.via6522 import BuzzerCallback, FontCallback
 from pyjr100.cpu import MB8861
 from pyjr100.io import Keyboard
 
@@ -16,6 +17,8 @@ class MachineConfig:
 
     use_extended_ram: bool = False
     rom_image: Optional[bytes] = None
+    via_buzzer: Optional[BuzzerCallback] = None
+    via_font: Optional[FontCallback] = None
 
 
 @dataclass
@@ -28,7 +31,7 @@ class Machine:
     video_ram: Memory
     udc_ram: Memory
     extended_io: Addressable
-    via: Addressable
+    via: Via6522
     rom: Memory
     keyboard: Keyboard
 
@@ -69,27 +72,6 @@ class ExtendedIoPort(Addressable):
             self._gamepad_status = value & 0xFF
 
 
-class Via6522Stub(Addressable):
-    """Minimal 6522 placeholder until the real device is implemented."""
-
-    def __init__(self, start: int) -> None:
-        self._start = start
-        self._end = start + 0x0F
-        self._registers = bytearray(0x10)
-
-    def get_start_address(self) -> int:
-        return self._start
-
-    def get_end_address(self) -> int:
-        return self._end
-
-    def load8(self, address: int) -> int:
-        return self._registers[address - self._start]
-
-    def store8(self, address: int, value: int) -> None:
-        self._registers[address - self._start] = value & 0xFF
-
-
 class BasicRom(Memory):
     """Simple ROM block that can be initialised with image data."""
 
@@ -118,9 +100,6 @@ def create_machine(config: MachineConfig) -> Machine:
     video_ram = VideoRam(0xC100, 0x0300)
     memory.register_memory(video_ram)
 
-    via = Via6522Stub(0xC800)
-    memory.register_memory(via)
-
     extended_io = ExtendedIoPort(0xCC00)
     memory.register_memory(extended_io)
 
@@ -130,9 +109,17 @@ def create_machine(config: MachineConfig) -> Machine:
     memory.register_memory(rom)
 
     keyboard = Keyboard()
-
-    cpu = MB8861(memory)
+    cpu = MB8861(memory, strict_illegal=False)
     cpu.reset()
+
+    via = Via6522(
+        0xC800,
+        keyboard,
+        cpu,
+        buzzer_callback=config.via_buzzer,
+        font_callback=config.via_font,
+    )
+    memory.register_memory(via)
 
     return Machine(
         memory=memory,

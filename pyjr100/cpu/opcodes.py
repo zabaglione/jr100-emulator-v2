@@ -77,6 +77,8 @@ def build_instruction_table(instructions: Iterable[Instruction]) -> Sequence[Ins
 
 DEFAULT_INSTRUCTIONS: Sequence[Instruction] = (
     Instruction(0x01, "NOP", AddressingMode.INHERENT, 2, "op_nop"),
+    Instruction(0x1A, "ORCC", AddressingMode.IMMEDIATE, 2, "op_orcc"),
+    Instruction(0x1C, "ANDCC", AddressingMode.IMMEDIATE, 2, "op_andcc"),
     # LDAA
     Instruction(0x86, "LDAA", AddressingMode.IMMEDIATE, 2, "op_ld_accumulator", accumulator="A"),
     Instruction(0x96, "LDAA", AddressingMode.DIRECT, 3, "op_ld_accumulator", accumulator="A"),
@@ -172,6 +174,7 @@ DEFAULT_INSTRUCTIONS: Sequence[Instruction] = (
     Instruction(0x2A, "BPL", AddressingMode.RELATIVE, 4, "op_branch_bpl"),
     Instruction(0x2B, "BMI", AddressingMode.RELATIVE, 4, "op_branch_bmi"),
     Instruction(0x20, "BRA", AddressingMode.RELATIVE, 4, "op_branch_bra"),
+    Instruction(0x21, "BRN", AddressingMode.RELATIVE, 4, "op_branch_brn"),
     Instruction(0x22, "BHI", AddressingMode.RELATIVE, 4, "op_branch_bhi"),
     Instruction(0x23, "BLS", AddressingMode.RELATIVE, 4, "op_branch_bls"),
     Instruction(0x28, "BVC", AddressingMode.RELATIVE, 4, "op_branch_bvc"),

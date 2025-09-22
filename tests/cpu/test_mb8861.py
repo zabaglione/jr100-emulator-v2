@@ -119,6 +119,7 @@ def test_deca_sets_overflow_on_negative_cross() -> None:
     assert read_flag(cpu, FLAG_V)
 
 
+
 def test_tab_transfers_a_to_b() -> None:
     cpu, ram = make_cpu(0x4500)
     cpu.state.a = 0xFF

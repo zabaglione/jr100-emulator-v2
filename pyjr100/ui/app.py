@@ -60,8 +60,13 @@ class JR100App:
             sample_rate = mixer_state[0]
             try:
                 self._beeper = SquareWaveBeeper(sample_rate=sample_rate)
-            except RuntimeError:
+            except RuntimeError as exc:
                 self._beeper = None
+                if debug_enabled("audio"):
+                    debug_log("audio", "beeper_init_failed=%s", exc)
+        else:
+            if debug_enabled("audio"):
+                debug_log("audio", "mixer_unavailable")
 
         if not self._config.rom_path:
             raise RuntimeError("ROM image is required; pass --rom <path>")
@@ -94,7 +99,7 @@ class JR100App:
                 if event.type == pygame.QUIT:
                     self._running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    self._running = False
+                    self._enter_debug_shell(machine)
                 elif event.type == pygame.KEYDOWN:
                     self._handle_key_event(pygame, event.key, pressed=True)
                 elif event.type == pygame.KEYUP:
@@ -128,6 +133,7 @@ class JR100App:
         # Fill the rest of the line with spaces.
         for idx in range(len(message), 32):
             machine.memory.store8(base + idx, 0x20)
+
 
     def _handle_key_event(self, pygame, key_code: int, *, pressed: bool) -> None:
         if self._keyboard is None:
@@ -224,6 +230,151 @@ class JR100App:
             debug_log("audio", "buzzer enabled=%s freq=%.2f", enabled, frequency)
         if self._beeper is not None:
             self._beeper.set_state(enabled, frequency)
+
+    # ------------------------------------------------------------------
+    # Debug shell
+
+    def _enter_debug_shell(self, machine: Machine) -> None:
+        print("\n=== JR-100 Debug Menu ===")
+        print("Enter command: [c]pu, [v]ia, [r]ow dump, [u]serchar, [q]uit, [Enter] resume")
+        try:
+            import pygame  # type: ignore
+        except Exception:  # pragma: no cover - debug path
+            pygame = None  # type: ignore
+
+        paused = True
+        while paused and self._running:
+            try:
+                command = input("debug> ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("Resuming emulator.")
+                break
+
+            if command == "" or command in {"resume"}:
+                paused = False
+            elif command in {"c", "cpu"}:
+                self._dump_cpu(machine)
+            elif command in {"v", "via"}:
+                self._dump_via(machine)
+            elif command in {"row", "rows", "display", "vr", "r"}:
+                self._dump_vram(machine)
+            elif command.startswith("r") and len(command) > 1:
+                self._dump_vram(machine, command[1:])
+            elif command in {"u", "udc", "char"}:
+                self._dump_user_character(machine)
+            elif command.startswith("u") and len(command) > 1:
+                self._dump_user_character(machine, command[1:])
+            elif command in {"q", "quit", "exit"}:
+                print("Exiting emulator.")
+                self._running = False
+                paused = False
+            else:
+                print("Commands: [Enter]=resume, [c]pu, [v]ia, [r]ow, [u]serchar, [q]uit")
+
+        if pygame is not None:
+            pygame.event.clear()
+
+    def _dump_cpu(self, machine: Machine) -> None:
+        state = machine.cpu.state
+        print(
+            "CPU PC={:04X} SP={:04X} IX={:04X} A={:02X} B={:02X} CC={:02X}".format(
+                state.pc,
+                state.sp,
+                state.x,
+                state.a,
+                state.b,
+                state.cc,
+            )
+        )
+        flags = [
+            ("H", 0x20),
+            ("I", 0x10),
+            ("N", 0x08),
+            ("Z", 0x04),
+            ("V", 0x02),
+            ("C", 0x01),
+        ]
+        active = "".join(name for name, mask in flags if (state.cc & mask))
+        print(f"Flags set: {active if active else '-'}")
+
+    def _dump_via(self, machine: Machine) -> None:
+        via = machine.via
+        fields = {
+            "ORB": via._orb,
+            "ORA": via._ora,
+            "DDRB": via._ddr_b,
+            "DDRA": via._ddr_a,
+            "ACR": via._acr,
+            "PCR": via._pcr,
+            "IFR": via._ifr,
+            "IER": via._ier,
+            "PB7": via._pb7,
+        }
+        for name, value in fields.items():
+            print(f"VIA {name} = {value:02X}")
+        print(f"Font plane active: {bool(via._orb & 0x20)}")
+
+    def _dump_vram(self, machine: Machine, row_spec: str | None = None) -> None:
+        vram = machine.video_ram.snapshot()
+        if row_spec is None:
+            try:
+                value = input("Row number (0-23 or 'all') [all]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("Cancelled.")
+                return
+        else:
+            value = row_spec.strip()
+            if not value:
+                value = "all"
+            print(f"Row number (0-23 or 'all') [all]: {value}")
+
+        if value in {"", "all"}:
+            rows = range(24)
+        else:
+            try:
+                rows = [int(value, 10)]
+            except ValueError:
+                print(f"Invalid row '{value}'. Enter 0-23 or 'all'.")
+                return
+        any_output = False
+        for row in rows:
+            if not 0 <= row < 24:
+                print(f"Row {row} out of range")
+                continue
+            start = row * 32
+            row_bytes = vram[start : start + 32]
+            hex_part = " ".join(f"{byte:02X}" for byte in row_bytes)
+            text_part = "".join(chr(byte & 0x7F) if 32 <= (byte & 0x7F) < 127 else '.' for byte in row_bytes)
+            print(f"{row:02d}: {hex_part} | {text_part}")
+            any_output = True
+        if not any_output:
+            print("No rows dumped.")
+
+    def _dump_user_character(self, machine: Machine, index_spec: str | None = None) -> None:
+        udc = machine.udc_ram.snapshot()
+        if index_spec is None:
+            try:
+                value = input("User char index (0-127) [0]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("Cancelled.")
+                return
+        else:
+            value = index_spec.strip()
+            print(f"User char index (0-127) [0]: {value}")
+        try:
+            index = int(value or "0")
+        except ValueError:
+            print(f"Invalid index '{value}'.")
+            return
+        if not 0 <= index < 128:
+            print("Index out of range")
+            return
+        start = index * 8
+        glyph = udc[start : start + 8]
+        print(f"UDC[{index}] bytes: {' '.join(f'{line:02X}' for line in glyph)}")
+        for line in glyph:
+            row = ''.join('#' if line & (1 << (7 - bit)) else '.' for bit in range(8))
+            print(row)
 
 
 def _canonical_name(name: str) -> str | None:

@@ -48,10 +48,9 @@ def test_rom_image_initialises_restart_vector() -> None:
     assert machine.rom.load8(0xFFFF) == 0x34
 
 
-def test_via_placeholder_accepts_reads_and_writes() -> None:
+def test_via_keyboard_scan_defaults_to_open_matrix() -> None:
     machine = create_machine(MachineConfig())
-    machine.memory.store8(0xC800, 0x55)
-    assert machine.memory.load8(0xC800) == 0x55
+    assert machine.memory.load8(0xC800) == 0xDF
 
 
 def test_extended_io_registers_gamepad_status() -> None:

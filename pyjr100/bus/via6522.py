@@ -171,6 +171,11 @@ class Via6522(Addressable):
         elif offset == 0x0B:
             self._acr = value
             self._debug("acr", acr=self._acr)
+            if (self._acr & 0xC0) != 0xC0:
+                self._stop_key_click()
+                self._pb7 = 1
+                self._sync_port_b()
+                self._update_buzzer(False)
         elif offset == 0x0C:
             self._pcr = value
             self._debug("pcr", pcr=self._pcr)
@@ -249,7 +254,8 @@ class Via6522(Addressable):
         self._update_keyboard_matrix()
 
     def _write_port_b(self, value: int) -> None:
-        self._orb = (self._orb & ~self._ddr_b) | (value & self._ddr_b)
+        outputs_mask = self._ddr_b | 0xE0  # PB5-7 behave as outputs on the JR-100
+        self._orb = (self._orb & ~outputs_mask) | (value & outputs_mask)
         self._pb7 = (self._orb >> 7) & 0x01
         self._debug("write_pb", orb=self._orb, pb7=self._pb7)
         self._sync_port_b()
@@ -284,7 +290,10 @@ class Via6522(Addressable):
         self._pb7 = 0
         self._sync_port_b()
         self._clear_timer1_interrupt()
-        self._update_buzzer(True)
+        if (self._acr & 0xC0) == 0xC0:
+            self._update_buzzer(True)
+        else:
+            self._update_buzzer(False)
         self._debug("t1_load", latch=self._timer1_latch, active=True)
 
     def _timer1_reload(self) -> int:
@@ -443,7 +452,16 @@ class Via6522(Addressable):
         self._debug("t1_stop", pb7=self._pb7)
 
     def cancel_key_click(self) -> None:
+        self._debug("cancel_click_before", ifr=self._ifr)
         self._stop_key_click()
+        self._timer2_auto_reload = False
+        self._timer2_active = False
+        self._key_release_countdown = 0
+        self._timer2 = 0
+        self._clear_timer1_interrupt()
+        self._clear_timer2_interrupt()
+        self._clear_ifr(IFR_BIT_T1 | IFR_BIT_CA1 | IFR_BIT_T2)
+        self._debug("cancel_click_after", ifr=self._ifr)
 
     def _handle_keyboard_event(self, row: int, _mask: int, _pressed: bool) -> None:
         selected = self._ora & 0x0F

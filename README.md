@@ -7,7 +7,7 @@
 
 * Python 3.11 以上
 * `pip install -r requirements-dev.txt` で依存関係（pygame等）を導入
-* JR-100 実機から吸い出した BASIC ROM (`jr100rom.prg`) を用意
+* JR-100 実機から吸い出した BASIC ROM（生バイナリ or PROG形式）を用意
 
 ### 起動方法（Python版）
 
@@ -15,7 +15,17 @@
 python run.py --rom /path/to/jr100rom.prg
 ```
 
-`--rom` オプションは必須です。ROMファイルを指定しない、あるいはパスが存在しない場合はアプリケーションがエラーメッセージを表示して終了します。
+`--rom` オプションは必須です。JR-100 BASIC ROMの生バイナリ（例: `jr100rom.bin`）か、従来通りのPROG形式（例: `jr100rom.prg`）のどちらでも指定できます。ROMファイルを指定しない、あるいはパスが存在しない場合はアプリケーションがエラーメッセージを表示して終了します。
+
+追加で BASIC プログラムを PROG 形式でロードしたい場合は、次のように `--program` を併用してください。
+
+```
+python run.py --rom /path/to/jr100rom.prg --program /path/to/sample.prog
+```
+
+#### サウンド出力
+
+Python版はVIAタイマ1からのビープを`pygame.mixer`経由で再生します。実行環境にオーディオデバイスがない、あるいはミキサ初期化が失敗した場合は自動的に無音モードへフォールバックします。動作確認やトラブルシュートを行う際は環境変数`JR100_DEBUG=audio`を指定すると、ミキサ初期化やビープのオン/オフをログで確認できます。
 
 Java版の手順は以下を参照してください。
 
