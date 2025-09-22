@@ -35,6 +35,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Launch the emulator in fullscreen mode",
     )
+    parser.add_argument(
+        "--program",
+        type=Path,
+        help="Optional PROG file to load after reset",
+    )
     return parser
 
 
@@ -45,7 +50,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.rom and not args.rom.exists():
         parser.error(f"ROM file not found: {args.rom}")
 
-    config = AppConfig(rom_path=args.rom, scale=args.scale, fullscreen=args.fullscreen)
+    if args.program and not args.program.exists():
+        parser.error(f"Program file not found: {args.program}")
+
+    config = AppConfig(
+        rom_path=args.rom,
+        program_path=args.program,
+        scale=args.scale,
+        fullscreen=args.fullscreen,
+    )
     app = JR100App(config)
     try:
         app.run()
