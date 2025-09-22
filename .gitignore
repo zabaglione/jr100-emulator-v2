@@ -1,0 +1,21 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local tooling
+.git-tmp/
+
+# Emulator assets and logs kept locally
+jr100rom.prg
+STARFIRE.prg
+JR-100.pdf
+via.log
