@@ -8,7 +8,7 @@ from typing import Optional
 from pyjr100.bus import Addressable, Memory, MemorySystem, UnmappedMemory, Via6522
 from pyjr100.bus.via6522 import BuzzerCallback, FontCallback
 from pyjr100.cpu import MB8861
-from pyjr100.io import Keyboard
+from pyjr100.io import GamepadState, Keyboard
 
 
 @dataclass
@@ -19,6 +19,7 @@ class MachineConfig:
     rom_image: Optional[bytes] = None
     via_buzzer: Optional[BuzzerCallback] = None
     via_font: Optional[FontCallback] = None
+    gamepad_state: GamepadState | None = None
 
 
 @dataclass
@@ -30,10 +31,11 @@ class Machine:
     ram: Memory
     video_ram: Memory
     udc_ram: Memory
-    extended_io: Addressable
+    extended_io: "ExtendedIoPort"
     via: Via6522
     rom: Memory
     keyboard: Keyboard
+    gamepad: GamepadState
 
 
 class MainRam(Memory):
@@ -49,12 +51,14 @@ class UserDefinedCharRam(Memory):
 
 
 class ExtendedIoPort(Addressable):
-    """Placeholder for the JR-100 extended I/O port."""
+    """JR-100 extended I/O block that exposes the gamepad register."""
 
-    def __init__(self, start: int, length: int = 0x400) -> None:
+    _GAMEPAD_OFFSET = 0x02
+
+    def __init__(self, start: int, *, length: int = 0x400, gamepad: GamepadState | None = None) -> None:
         self._start = start
         self._end = start + length - 1
-        self._gamepad_status = 0
+        self._gamepad = gamepad or GamepadState()
 
     def get_start_address(self) -> int:
         return self._start
@@ -62,14 +66,36 @@ class ExtendedIoPort(Addressable):
     def get_end_address(self) -> int:
         return self._end
 
+    def get_gamepad_state(self) -> GamepadState:
+        return self._gamepad
+
+    def attach_gamepad(self, gamepad: GamepadState) -> None:
+        self._gamepad = gamepad
+
     def load8(self, address: int) -> int:
-        if address == self._start + 0x02:
-            return self._gamepad_status
-        return 0
+        if address == self._start + self._GAMEPAD_OFFSET:
+            return self._gamepad.read()
+        return 0x00
 
     def store8(self, address: int, value: int) -> None:
-        if address == self._start + 0x02:
-            self._gamepad_status = value & 0xFF
+        if address == self._start + self._GAMEPAD_OFFSET:
+            self._gamepad.override(value)
+
+    def load16(self, address: int) -> int:
+        if address == self._start + self._GAMEPAD_OFFSET - 1:
+            return self._gamepad.read() & 0x00FF
+        if address == self._start + self._GAMEPAD_OFFSET:
+            return (self._gamepad.read() << 8) & 0xFF00
+        return super().load16(address)
+
+    def store16(self, address: int, value: int) -> None:
+        if address in (
+            self._start + self._GAMEPAD_OFFSET - 1,
+            self._start + self._GAMEPAD_OFFSET,
+        ):
+            self._gamepad.override(value & 0xFF)
+        else:
+            super().store16(address, value)
 
 
 class BasicRom(Memory):
@@ -100,7 +126,9 @@ def create_machine(config: MachineConfig) -> Machine:
     video_ram = VideoRam(0xC100, 0x0300)
     memory.register_memory(video_ram)
 
-    extended_io = ExtendedIoPort(0xCC00)
+    gamepad_state = config.gamepad_state or GamepadState()
+
+    extended_io = ExtendedIoPort(0xCC00, gamepad=gamepad_state)
     memory.register_memory(extended_io)
 
     rom = BasicRom(0xE000, 0x2000)
@@ -131,4 +159,5 @@ def create_machine(config: MachineConfig) -> Machine:
         via=via,
         rom=rom,
         keyboard=keyboard,
+        gamepad=gamepad_state,
     )

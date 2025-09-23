@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .gamepad import GamepadState
 from .keyboard import Keyboard
 
-__all__ = ["Keyboard"]
+__all__ = [
+    "Keyboard",
+    "GamepadState",
+]

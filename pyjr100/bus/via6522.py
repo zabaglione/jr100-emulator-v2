@@ -67,17 +67,19 @@ class Via6522(Addressable):
         self._timer2 = 0x0000
         self._timer2_latch = 0x0000
         self._timer2_active = False
-        self._timer2_auto_reload = False
-        self._key_timer_period = 1
-        self._key_irq_pending = False
-        self._key_release_countdown = 0
+        self._timer2_initialized = False
+        self._timer2_enabled = False
 
-        # PB7 mirrors PB6 through JR-100 wiring
+        # PB7 mirrors PB6 through JR-100 wiring and Timer2 pulse counting relies on PB6 edges.
         self._pb7 = 1
+        self._previous_pb6 = 0
         self._row_cache = [0x1F] * 16
         self._ca1_level = 1
         self._ca2_level = 1
-        self._ca2_latched = False
+        self._ca2_timer = -1
+        self._handshake_pending = False
+        self._activity_log: list[dict[str, int]] = []
+        self._activity_limit = 128
         self._sync_port_b()
         self._debug("init", start="%04x" % start)
 
@@ -98,43 +100,43 @@ class Via6522(Addressable):
         if debug_enabled("via-reg"):
             self._debug("load", offset=offset)
         if offset == 0x00:
-            return self._read_port_b()
-        if offset == 0x01:
-            return self._read_port_a()
-        if offset == 0x02:
-            return self._ddr_b
-        if offset == 0x03:
-            return self._ddr_a
-        if offset == 0x04:
+            value = self._read_port_b()
+        elif offset == 0x01:
+            value = self._read_port_a()
+        elif offset == 0x02:
+            value = self._ddr_b
+        elif offset == 0x03:
+            value = self._ddr_a
+        elif offset == 0x04:
             value = self._timer1 & 0xFF
             self._clear_timer1_interrupt()
-            return value
-        if offset == 0x05:
-            return (self._timer1 >> 8) & 0xFF
-        if offset == 0x06:
-            return self._timer1_latch & 0xFF
-        if offset == 0x07:
-            return (self._timer1_latch >> 8) & 0xFF
-        if offset == 0x08:
-            return self._timer2 & 0xFF
-        if offset == 0x09:
-            return (self._timer2 >> 8) & 0xFF
-        if offset == 0x0A:
-            return 0x00
-        if offset == 0x0B:
-            return self._acr
-        if offset == 0x0C:
-            return self._pcr
-        if offset == 0x0D:
+        elif offset == 0x05:
+            value = (self._timer1 >> 8) & 0xFF
+        elif offset == 0x06:
+            value = self._timer1_latch & 0xFF
+        elif offset == 0x07:
+            value = (self._timer1_latch >> 8) & 0xFF
+        elif offset == 0x08:
+            self._clear_timer2_interrupt()
+            value = self._timer2 & 0xFF
+        elif offset == 0x09:
+            value = (self._timer2 >> 8) & 0xFF
+        elif offset == 0x0A:
+            value = 0x00
+        elif offset == 0x0B:
+            value = self._acr
+        elif offset == 0x0C:
+            value = self._pcr
+        elif offset == 0x0D:
             value = self._ifr
-            if self._key_irq_pending or self._any_keys_pressed():
-                value |= IFR_BIT_T2
-            return value
-        if offset == 0x0E:
-            return self._ier | 0x80
-        if offset == 0x0F:
-            return self._read_port_a()
-        return 0x00
+        elif offset == 0x0E:
+            value = self._ier | 0x80
+        elif offset == 0x0F:
+            value = self._read_port_a()
+        else:
+            value = 0x00
+        self._record_activity('R', offset, value)
+        return value
 
     def store8(self, address: int, value: int) -> None:
         offset = address - self._start
@@ -144,6 +146,7 @@ class Via6522(Addressable):
 
         if offset == 0x00:
             self._write_port_b(value)
+        
         elif offset == 0x01:
             self._write_port_a(value)
         elif offset == 0x02:
@@ -165,8 +168,10 @@ class Via6522(Addressable):
             self._timer2_latch = (self._timer2_latch & 0xFF00) | value
         elif offset == 0x09:
             self._timer2_latch = (value << 8) | (self._timer2_latch & 0x00FF)
-            self._timer2 = self._timer2_latch or 0x10000
+            self._timer2 = self._timer2_latch
+            self._timer2_initialized = True
             self._timer2_active = True
+            self._timer2_enabled = True
             self._clear_timer2_interrupt()
         elif offset == 0x0B:
             self._acr = value
@@ -186,6 +191,7 @@ class Via6522(Addressable):
             self._write_ier(value)
         elif offset == 0x0F:
             self._write_port_a(value)
+        self._record_activity('W', offset, value)
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -196,6 +202,12 @@ class Via6522(Addressable):
 
         if debug_enabled("via-tick"):
             self._debug("tick", cycles=cycles, t1=self._timer1, t2=self._timer2)
+
+        # CA2 pulse timer for handshake output
+        if self._ca2_timer >= 0:
+            self._ca2_timer -= cycles
+            if self._ca2_timer < 0:
+                self._set_ca2_output(True)
 
         # Timer 1 (Φ2 clocked)
         if self._timer1_active:
@@ -210,48 +222,63 @@ class Via6522(Addressable):
 
         # Timer 2 (used minimally on JR-100)
         if self._timer2_active:
-            if self._timer2_pulse_mode():
-                decrement = max(1, cycles)
+            base_decrement = max(1, cycles) if self._timer2_pulse_mode() else cycles
+            if self._timer2_initialized:
+                # 書き込み直後の1ステップ分だけデクリメントを抑制する。
+                decrement = max(base_decrement - 1, 0)
+                self._timer2_initialized = False
             else:
-                decrement = cycles
-            self._timer2 -= decrement
+                decrement = base_decrement
+            if decrement:
+                self._timer2 -= decrement
             if self._timer2 <= 0:
-                self._set_interrupt(IFR_BIT_T2)
-                if self._timer2_auto_reload:
-                    period = self._timer2_latch or self._key_timer_period or 1
-                    self._timer2 += period
-                else:
-                    self._timer2 = self._timer2_latch or 0x10000
-                    self._timer2_active = False
-        if self._key_release_countdown > 0:
-            self._key_release_countdown = max(0, self._key_release_countdown - cycles)
-            if self._key_release_countdown == 0:
-                self._reset_keyboard_handshake()
+                if self._timer2_enabled:
+                    self._set_interrupt(IFR_BIT_T2)
+                    self._timer2_enabled = False
+                self._timer2 = self._timer2_latch or 0x10000
 
     # ------------------------------------------------------------------
     # Internal helpers
 
     def _read_port_a(self) -> int:
-        inputs = (~self._ddr_a) & 0xFF
-        outputs = self._ddr_a & 0xFF
-        value = (self._ora & outputs) | (self._ora & inputs)
+        value = self._read_port_a_raw()
         self._debug("read_pa", value=value)
-        self._clear_ifr(IFR_BIT_CA1)
+        mask = IFR_BIT_CA1
+        if (self._pcr & 0x0A) != 0x02:
+            mask |= IFR_BIT_CA2
+        self._clear_ifr(mask)
+        mode = self._ca2_mode()
+        if self._ca2_level == 1 and (mode == 0x0A or mode == 0x08):
+            self._set_ca2_output(False)
+            self._handshake_pending = True
+            if mode == 0x08:
+                self._schedule_ca2_release()
         return value
 
     def _read_port_b(self) -> int:
         self._update_keyboard_matrix()
-        self._debug("read_pb", value=self._orb)
-        self._clear_ifr(IFR_BIT_CA1)
-        if self._ca2_handshake_enabled() and self._ca2_latched:
-            self._set_ca2(True)
-            self._ca2_latched = False
-        return self._orb
+        value = self._orb
+        self._debug("read_pb", value=value)
+        mask = IFR_BIT_CB1
+        if (self._pcr & 0xA0) != 0x20:
+            mask |= IFR_BIT_CB2
+        self._clear_ifr(mask)
+        return value
 
     def _write_port_a(self, value: int) -> None:
         self._ora = value & 0xFF
         self._debug("write_pa", ora=self._ora, ddr=self._ddr_a)
         self._update_keyboard_matrix()
+        mask = IFR_BIT_CA1
+        if (self._pcr & 0x0A) != 0x02:
+            mask |= IFR_BIT_CA2
+        self._clear_ifr(mask)
+        mode = self._ca2_mode()
+        if self._ca2_level == 1 and (mode == 0x0A or (self._pcr & 0x0C) == 0x08):
+            self._set_ca2_output(False)
+            self._handshake_pending = True
+            if mode == 0x0A:
+                self._schedule_ca2_release()
 
     def _write_port_b(self, value: int) -> None:
         outputs_mask = self._ddr_b | 0xE0  # PB5-7 behave as outputs on the JR-100
@@ -259,6 +286,10 @@ class Via6522(Addressable):
         self._pb7 = (self._orb >> 7) & 0x01
         self._debug("write_pb", orb=self._orb, pb7=self._pb7)
         self._sync_port_b()
+        mask = IFR_BIT_CB1
+        if (self._pcr & 0xA0) != 0x20:
+            mask |= IFR_BIT_CB2
+        self._clear_ifr(mask)
 
     def _update_keyboard_matrix(self) -> None:
         selected = self._ora & 0x0F
@@ -342,12 +373,10 @@ class Via6522(Addressable):
         self._notify_font_change()
 
     def _set_interrupt(self, mask: int) -> None:
-        if self._ifr & mask:
-            return
-        self._ifr |= mask
-        self._update_ifr_global()
-        if mask & IFR_BIT_T2:
-            self._key_irq_pending = True
+        already_set = bool(self._ifr & mask)
+        if not already_set:
+            self._ifr |= mask
+            self._update_ifr_global()
         if (mask & IFR_BIT_CA1) != 0:
             self._cpu.request_irq()
         elif self._ier & mask:
@@ -367,17 +396,10 @@ class Via6522(Addressable):
     def _clear_ifr(self, mask: int) -> None:
         if mask & IFR_BIT_IRQ:
             mask = 0x7F
-        if mask & IFR_BIT_CA1:
-            mask |= IFR_BIT_CB2
-        if mask & IFR_BIT_T2:
-            self._key_irq_pending = False
         if mask:
             self._ifr &= ~mask
             self._update_ifr_global()
             self._debug("ifr_clr", mask=mask, ifr=self._ifr)
-        if (mask & IFR_BIT_T2) and self._any_keys_pressed():
-            self._key_irq_pending = True
-            self._set_interrupt(IFR_BIT_T2)
 
     def _write_ier(self, value: int) -> None:
         if value & 0x80:
@@ -413,34 +435,37 @@ class Via6522(Addressable):
         trigger_on_rising = (self._pcr & 0x01) == 0x01
         if (level == 1 and trigger_on_rising) or (level == 0 and not trigger_on_rising):
             if (self._acr & 0x01) == 0x01:
-                self._read_port_a()
+                self._ira = self._read_port_a_raw()
             self._set_interrupt(IFR_BIT_CA1)
-            self._set_interrupt(IFR_BIT_T2)
-            self._set_interrupt(IFR_BIT_CB2)
+            self._debug("ca1", level=level, pcr=self._pcr)
+            if self._ca2_level == 0 and self._ca2_is_handshake_mode():
+                self._set_ca2_output(True)
             if level == 0:
                 self._arm_timer2_for_key()
-            self._debug("ca1", level=level, pcr=self._pcr)
-            if self._ca2_handshake_enabled():
-                self._set_ca2(False)
-                self._ca2_latched = True
-        else:
-            # CA1が非アクティブに戻っても、6522ではIFRのハンドシェイクビットは
-            # CPUが手動でクリアするまで保持される。Python版でも同じ挙動にするため
-            # ここではタイマ2割り込みを自動的に解放しない。
-            self._key_irq_pending = bool(self._ifr & IFR_BIT_T2)
 
-    def _set_ca2(self, high: bool) -> None:
+    def _set_ca2_output(self, high: bool) -> None:
         level = 1 if high else 0
         if level == self._ca2_level:
             return
         self._ca2_level = level
+        if level:
+            self._ca2_timer = -1
+            if self._handshake_pending:
+                self._handshake_pending = False
+                self._stop_key_click()
         self._debug("ca2", level=level)
-        if level == 1 and self._ca2_latched:
-            self._ca2_latched = False
-            self._stop_key_click()
 
-    def _ca2_handshake_enabled(self) -> bool:
-        return (self._pcr & 0x0E) == 0x08
+    def _schedule_ca2_release(self, delay: int = 1) -> None:
+        self._ca2_timer = max(delay, 1)
+
+    def _ca2_mode(self) -> int:
+        return self._pcr & 0x0E
+
+    def _ca2_is_handshake_mode(self) -> bool:
+        return self._ca2_mode() == 0x08
+
+    def _ca2_is_pulse_mode(self) -> bool:
+        return self._ca2_mode() == 0x0A
 
     def _stop_key_click(self) -> None:
         if (self._acr & 0xC0) != 0xC0:
@@ -454,13 +479,9 @@ class Via6522(Addressable):
     def cancel_key_click(self) -> None:
         self._debug("cancel_click_before", ifr=self._ifr)
         self._stop_key_click()
-        self._timer2_auto_reload = False
-        self._timer2_active = False
-        self._key_release_countdown = 0
-        self._timer2 = 0
         self._clear_timer1_interrupt()
-        self._clear_timer2_interrupt()
-        self._clear_ifr(IFR_BIT_T1 | IFR_BIT_CA1 | IFR_BIT_T2)
+        self._handshake_pending = False
+        self._clear_ifr(IFR_BIT_T1)
         self._debug("cancel_click_after", ifr=self._ifr)
 
     # ------------------------------------------------------------------
@@ -490,29 +511,31 @@ class Via6522(Addressable):
         else:
             self._update_ca1(self._any_keys_pressed())
         self._update_ca1(self._any_keys_pressed())
-        if not self._any_keys_pressed():
-            self._key_release_countdown = max(self._key_release_countdown, self._key_timer_period)
 
     def _any_keys_pressed(self) -> bool:
         return any(value & 0x1F for value in self._keyboard.snapshot())
 
+    def _read_port_a_raw(self) -> int:
+        inputs = (~self._ddr_a) & 0xFF
+        outputs = self._ddr_a & 0xFF
+        return (self._ora & outputs) | (self._ora & inputs)
+
     def _arm_timer2_for_key(self) -> None:
         if self._timer2_pulse_mode():
             return
-        self._timer2_auto_reload = True
-        period = max(self._key_timer_period, 1)
-        if self._timer2_latch == 0:
-            self._timer2_latch = period
-        if self._timer2 <= 0 or self._timer2 > self._timer2_latch:
-            self._timer2 = period
+        latch = self._timer2_latch or 1
+        self._timer2_latch = latch
+        if not self._timer2_active:
+            self._timer2 = latch
         self._timer2_active = True
+        self._timer2_initialized = False
+        self._timer2_enabled = True
         self._clear_timer2_interrupt()
-        self._key_release_countdown = period
 
     def _reset_keyboard_handshake(self) -> None:
-        self._timer2_auto_reload = False
         self._timer2_active = False
-        self._key_irq_pending = False
+        self._timer2_enabled = False
+        self._handshake_pending = False
         self._clear_timer1_interrupt()
         self._clear_ifr(IFR_BIT_CB2)
 
@@ -521,3 +544,53 @@ class Via6522(Addressable):
             return
         field_str = " ".join(f"{key}={value}" for key, value in fields.items())
         debug_log("via", f"{event}: {field_str}")
+
+    # ------------------------------------------------------------------
+    # Debug helpers
+
+    def _register_name(self, offset: int) -> str:
+        names = {
+            0x00: "IORB",
+            0x01: "IORA",
+            0x02: "DDRB",
+            0x03: "DDRA",
+            0x04: "T1CL",
+            0x05: "T1CH",
+            0x06: "T1LL",
+            0x07: "T1LH",
+            0x08: "T2CL",
+            0x09: "T2CH",
+            0x0A: "SR",
+            0x0B: "ACR",
+            0x0C: "PCR",
+            0x0D: "IFR",
+            0x0E: "IER",
+            0x0F: "IORA*",
+        }
+        return names.get(offset & 0x0F, f"REG{offset:02X}")
+
+    def _record_activity(self, access: str, offset: int, value: int) -> None:
+        entry = {
+            "access":  access,
+            "offset":  offset & 0xFF,
+            "value":   value & 0xFF,
+            "pc":      self._cpu.state.pc & 0xFFFF,
+            "ifr":     self._ifr & 0xFF,
+            "ier":     self._ier & 0xFF,
+        }
+        self._activity_log.append(entry)
+        if len(self._activity_log) > self._activity_limit:
+            del self._activity_log[0]
+
+    def debug_recent_activity(self, limit: int = 16) -> list[str]:
+        subset = self._activity_log[-limit:]
+        lines: list[str] = []
+        for entry in subset:
+            access = entry["access"]
+            offset = entry["offset"]
+            name = self._register_name(offset)
+            value = entry["value"]
+            lines.append(
+                f"{access} {name} (ofs={offset:02X}) <= {value:02X} pc={entry['pc']:04X} IFR={entry['ifr']:02X} IER={entry['ier']:02X}"
+            )
+        return lines
