@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from pyjr100.ui.app import AppConfig, JR100App
+from jr100_port.ui.app import AppConfig, JR100App
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -45,6 +45,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional PROG file to load after reset",
     )
+    parser.add_argument(
+        "--debug-overlay",
+        action="store_true",
+        help="Display CPU debug overlay alongside the screen",
+    )
     return parser
 
 
@@ -61,9 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     config = AppConfig(
         rom_path=args.rom,
         program_path=args.program,
+        use_extended_ram=args.extended_ram,
         scale=args.scale,
         fullscreen=args.fullscreen,
-        use_extended_ram=args.extended_ram,
+        debug_overlay=args.debug_overlay,
     )
     app = JR100App(config)
     try:

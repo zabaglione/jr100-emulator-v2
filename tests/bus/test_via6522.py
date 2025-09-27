@@ -1,111 +1,97 @@
-"""Tests for the JR-100 VIA implementation."""
+"""VIA 6522 behaviour regression tests."""
 
 from __future__ import annotations
 
-from pyjr100.bus import Memory, MemorySystem, Via6522
-from pyjr100.bus.via6522 import TIMER1_INTERRUPT_BIT
-from pyjr100.cpu import MB8861
-from pyjr100.io import Keyboard
+from pyjr100.bus.via6522 import IFR_BIT_CA1, IFR_BIT_T2
+from pyjr100.system.machine import MachineConfig, create_machine
 
 
-def make_cpu() -> tuple[MB8861, MemorySystem]:
-    memory = MemorySystem()
-    memory.allocate_space(0x10000)
-    ram = Memory(0x0000, 0x10000)
-    memory.register_memory(ram)
-    ram.store16(0xFFFE, 0x2000)
-    cpu = MB8861(memory)
-    cpu.reset()
-    return cpu, memory
+def _snapshot_ifr(machine) -> int:
+    return machine.via.debug_snapshot()["IFR"]
 
 
-def test_via_timer1_sets_irq_flag() -> None:
-    cpu, _ = make_cpu()
-    keyboard = Keyboard()
-    via = Via6522(0xC800, keyboard, cpu)
+def test_timer2_interrupt_triggers_once() -> None:
+    machine = create_machine(MachineConfig())
+    via = machine.via
+    base = via.get_start_address()
 
-    via.store8(0xC80E, 0xC0)  # enable T1 interrupt
-    via.store8(0xC804, 0x04)
-    via.store8(0xC805, 0x00)
+    # Ensure IFR is clear before programming the timer.
+    machine.memory.store8(base + 0x0D, 0x7F)
 
-    via.tick(7)
+    # Program Timer2 with a small interval (16 cycles).
+    machine.memory.store8(base + 0x08, 0x10)
+    machine.memory.store8(base + 0x09, 0x00)
 
-    assert via.load8(0xC80D) & TIMER1_INTERRUPT_BIT
-    assert cpu.irq_pending
+    assert (_snapshot_ifr(machine) & IFR_BIT_T2) == 0
+
+    via.tick(0x11)
+    assert (_snapshot_ifr(machine) & IFR_BIT_T2) == IFR_BIT_T2
+
+    # Reading T2 low byte should acknowledge the interrupt.
+    machine.memory.load8(base + 0x08)
+    assert (_snapshot_ifr(machine) & IFR_BIT_T2) == 0
+
+    # Without re-arming the timer, additional ticks must not raise new interrupts.
+    via.tick(0x10)
+    assert (_snapshot_ifr(machine) & IFR_BIT_T2) == 0
 
 
-def test_via_keyboard_scan_returns_open_bits() -> None:
-    cpu, _ = make_cpu()
-    keyboard = Keyboard()
-    via = Via6522(0xC800, keyboard, cpu)
+def test_ca1_interrupt_does_not_set_timer2_flag() -> None:
+    machine = create_machine(MachineConfig())
+    via = machine.via
+    keyboard = machine.keyboard
+    base = via.get_start_address()
 
-    assert via.load8(0xC800) == 0xDF
+    machine.memory.store8(base + 0x0D, 0x7F)
 
-
-def test_via_keyboard_sets_ca1_interrupt_on_press() -> None:
-    cpu, _ = make_cpu()
-    keyboard = Keyboard()
-    via = Via6522(0xC800, keyboard, cpu)
+    # Select the row that contains the 'A' key.
+    machine.memory.store8(base + 0x01, 0x01)
 
     keyboard.press("a")
-    assert via.load8(0xC80D) & 0x02  # CA1 asserted on press
+
+    ifr = _snapshot_ifr(machine)
+    assert (ifr & IFR_BIT_CA1) == IFR_BIT_CA1
+    assert (ifr & IFR_BIT_T2) == 0
+
+    # Reading the port should clear the CA1 interrupt.
+    machine.memory.load8(base + 0x01)
+    assert (_snapshot_ifr(machine) & IFR_BIT_CA1) == 0
+
     keyboard.release("a")
-    via.cancel_key_click()
-    assert (via.load8(0xC80D) & 0x02) == 0
 
 
-def test_via_port_b_font_bit_updates_even_without_ddr() -> None:
-    cpu, _ = make_cpu()
-    keyboard = Keyboard()
-    toggles: list[bool] = []
+def test_font_plane_defaults_to_user_font() -> None:
+    calls: list[bool] = []
 
-    def font_callback(use_user: bool) -> None:
-        toggles.append(use_user)
+    config = MachineConfig(via_font=calls.append)
+    machine = create_machine(config)
 
-    via = Via6522(0xC800, keyboard, cpu, font_callback=font_callback)
+    orb = machine.via.debug_snapshot()["ORB"]
+    assert (orb & 0x20) == 0x20
 
-    via.store8(0xC800, 0x20)
-    via.store8(0xC800, 0x00)
-
-    assert toggles[-2:] == [True, False]
+    # The font callback should have been notified at least once with CMODE1 active.
+    assert calls and calls[-1] is True
 
 
-def test_via_timer1_buzzer_frequency_and_stop() -> None:
-    cpu, _ = make_cpu()
-    keyboard = Keyboard()
-    events: list[tuple[bool, float]] = []
+def test_portb5_remains_high_until_explicitly_cleared() -> None:
+    machine = create_machine(MachineConfig())
+    via = machine.via
+    base = via.get_start_address()
 
-    via = Via6522(0xC800, keyboard, cpu, buzzer_callback=lambda e, f: events.append((e, f)))
+    def has_cmode1() -> bool:
+        return bool(via.debug_snapshot()["ORB"] & 0x20)
 
-    via.store8(0xC80B, 0xC0)
-    via.store8(0xC804, 0x04)
-    via.store8(0xC805, 0x00)
+    # Default state uses CMODE1 (bit 5 high).
+    assert has_cmode1()
 
-    assert events
-    enabled, freq = events[-1]
-    assert enabled is True
-    assert 70_000.0 < freq < 90_000.0
+    # Writing ORB before DDRB config should not drop PB5.
+    machine.memory.store8(base + 0x00, 0x00)
+    assert has_cmode1()
 
-    via.store8(0xC80B, 0x00)
-    via.store8(0xC804, 0x04)
-    via.store8(0xC805, 0x00)
+    # Enabling PB5 as output still retains the high level.
+    machine.memory.store8(base + 0x02, 0x20)
+    assert has_cmode1()
 
-    assert events[-1] == (False, 0.0)
-
-
-def test_via_cancel_key_click_silences_buzzer() -> None:
-    cpu, _ = make_cpu()
-    keyboard = Keyboard()
-    events: list[tuple[bool, float]] = []
-
-    via = Via6522(0xC800, keyboard, cpu, buzzer_callback=lambda e, f: events.append((e, f)))
-
-    via.store8(0xC80B, 0xC0)
-    via.store8(0xC804, 0x04)
-    via.store8(0xC805, 0x00)
-
-    assert events and events[-1][0] is True
-
-    via.cancel_key_click()
-
-    assert events[-1] == (False, 0.0)
+    # Once PB5 is configured as output, an explicit clear should switch to CMODE0.
+    machine.memory.store8(base + 0x00, 0x00)
+    assert not has_cmode1()

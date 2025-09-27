@@ -9,6 +9,7 @@ from pyjr100.bus import Addressable, Memory, MemorySystem, UnmappedMemory, Via65
 from pyjr100.bus.via6522 import BuzzerCallback, FontCallback
 from pyjr100.cpu import MB8861
 from pyjr100.io import GamepadState, Keyboard
+from pyjr100.video import FontManager
 
 
 @dataclass
@@ -36,6 +37,7 @@ class Machine:
     rom: Memory
     keyboard: Keyboard
     gamepad: GamepadState
+    font_manager: FontManager
 
 
 class MainRam(Memory):
@@ -43,11 +45,27 @@ class MainRam(Memory):
 
 
 class VideoRam(Memory):
-    """Video RAM block."""
+    """Video RAM block that notifies the font manager on updates."""
+
+    def __init__(self, start: int, length: int, font_manager: FontManager) -> None:
+        super().__init__(start, length)
+        self._font_manager = font_manager
+
+    def store8(self, address: int, value: int) -> None:
+        super().store8(address, value)
+        self._font_manager.update_vram_font(address, value & 0xFF)
 
 
 class UserDefinedCharRam(Memory):
-    """User defined character RAM block."""
+    """User defined character RAM block that updates the font manager."""
+
+    def __init__(self, start: int, length: int, font_manager: FontManager) -> None:
+        super().__init__(start, length)
+        self._font_manager = font_manager
+
+    def store8(self, address: int, value: int) -> None:
+        super().store8(address, value)
+        self._font_manager.update_udc(address, value & 0xFF)
 
 
 class ExtendedIoPort(Addressable):
@@ -79,7 +97,7 @@ class ExtendedIoPort(Addressable):
 
     def store8(self, address: int, value: int) -> None:
         if address == self._start + self._GAMEPAD_OFFSET:
-            self._gamepad.override(value)
+            self._gamepad.write(value)
 
     def load16(self, address: int) -> int:
         if address == self._start + self._GAMEPAD_OFFSET - 1:
@@ -93,7 +111,7 @@ class ExtendedIoPort(Addressable):
             self._start + self._GAMEPAD_OFFSET - 1,
             self._start + self._GAMEPAD_OFFSET,
         ):
-            self._gamepad.override(value & 0xFF)
+            self._gamepad.write(value & 0xFF)
         else:
             super().store16(address, value)
 
@@ -120,10 +138,12 @@ def create_machine(config: MachineConfig) -> Machine:
         unmapped = UnmappedMemory(0x4000, 0x4000)
         memory.register_memory(unmapped)
 
-    udc_ram = UserDefinedCharRam(0xC000, 0x0100)
+    font_manager = FontManager()
+
+    udc_ram = UserDefinedCharRam(0xC000, 0x0100, font_manager)
     memory.register_memory(udc_ram)
 
-    video_ram = VideoRam(0xC100, 0x0300)
+    video_ram = VideoRam(0xC100, 0x0300, font_manager)
     memory.register_memory(video_ram)
 
     gamepad_state = config.gamepad_state or GamepadState()
@@ -149,6 +169,8 @@ def create_machine(config: MachineConfig) -> Machine:
     )
     memory.register_memory(via)
 
+    font_manager.sync_from_memory(video_ram.snapshot(), udc_ram.snapshot())
+
     return Machine(
         memory=memory,
         cpu=cpu,
@@ -160,4 +182,5 @@ def create_machine(config: MachineConfig) -> Machine:
         rom=rom,
         keyboard=keyboard,
         gamepad=gamepad_state,
+        font_manager=font_manager,
     )

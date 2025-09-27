@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from pyjr100.audio import SquareWaveBeeper
+from pyjr100.bus.memory import Memory, MemorySystem
 from pyjr100.loader import (
     BasicTextFormatError,
     ProgFormatError,
@@ -358,13 +359,12 @@ class JR100App:
         self._gamepad_state.set_button(self._joystick_button)
 
     def _create_machine(self, rom_path: Path) -> Machine:
-        rom_image = rom_path.read_bytes()
-        is_prog = _is_prog_image(rom_image)
+        rom_payload, _ = _prepare_rom_image(rom_path)
 
         machine = create_machine(
             MachineConfig(
                 use_extended_ram=self._config.use_extended_ram,
-                rom_image=None if is_prog else rom_image,
+                rom_image=rom_payload,
                 via_buzzer=self._handle_buzzer,
                 via_font=self._handle_font_select,
                 gamepad_state=self._gamepad_state if self._config.enable_gamepad else None,
@@ -373,9 +373,6 @@ class JR100App:
 
         if self._config.enable_gamepad:
             self._gamepad_state = machine.gamepad
-
-        if is_prog:
-            self._load_rom_prog(machine, rom_image, rom_path)
 
         return machine
 
@@ -391,14 +388,6 @@ class JR100App:
                 raise RuntimeError(
                     f"Failed to load program {program_path}: PROG error={prog_error}; BASIC error={text_error}"
                 ) from text_error
-
-    def _load_rom_prog(self, machine: Machine, rom_image: bytes, rom_path: Path) -> None:
-        try:
-            load_prog(io.BytesIO(rom_image), machine.memory)
-        except ProgFormatError as exc:
-            raise RuntimeError(f"Failed to load ROM PROG {rom_path}: {exc}") from exc
-
-        machine.cpu.reset()
 
     def _wait_for_basic_ready(self, machine: Machine, *, max_cycles: int = 2_000_000) -> None:
         start_ptr = _read_pointer(machine, 0x0006)
@@ -701,20 +690,18 @@ class JR100App:
 
     def _dump_via(self, machine: Machine) -> None:
         via = machine.via
-        fields = {
-            "ORB": via._orb,
-            "ORA": via._ora,
-            "DDRB": via._ddr_b,
-            "DDRA": via._ddr_a,
-            "ACR": via._acr,
-            "PCR": via._pcr,
-            "IFR": via._ifr,
-            "IER": via._ier,
-            "PB7": via._pb7,
-        }
-        for name, value in fields.items():
-            print(f"VIA {name} = {value:02X}")
-        print(f"Font plane active: {bool(via._orb & 0x20)}")
+        snapshot = via.debug_snapshot()
+        for name in ("ORB", "ORA", "DDRB", "DDRA", "ACR", "PCR", "IFR", "IER", "PB7", "T1", "T2"):
+            value = snapshot.get(name)
+            if value is None:
+                continue
+            if name == "PB7":
+                print(f"VIA {name} = {value}")
+            elif name in {"T1", "T2"}:
+                print(f"VIA {name} = {value:04X}")
+            else:
+                print(f"VIA {name} = {value:02X}")
+        print(f"Font plane active: {bool(snapshot.get('ORB', 0) & 0x20)}")
 
     def _dump_vram(self, machine: Machine, row_spec: str | None = None) -> None:
         vram = machine.video_ram.snapshot()
@@ -892,6 +879,30 @@ def _canonical_name(name: str) -> str | None:
     if len(lowered) == 1:
         return lowered
     return mapping.get(lowered)
+
+
+def _prepare_rom_image(rom_path: Path) -> tuple[bytes, bool]:
+    raw = rom_path.read_bytes()
+    if not _is_prog_image(raw):
+        return raw, False
+
+    scratch = MemorySystem()
+    scratch.allocate_space(0x10000)
+    backing = Memory(0x0000, 0x10000)
+    scratch.register_memory(backing)
+
+    try:
+        load_prog(io.BytesIO(raw), scratch)
+    except ProgFormatError as exc:
+        raise RuntimeError(f"Failed to decode ROM PROG {rom_path}: {exc}") from exc
+
+    snapshot = backing.snapshot()
+    rom_start = 0xE000
+    rom_end = 0x10000
+    if len(snapshot) < rom_end:
+        raise RuntimeError(f"Decoded ROM data truncated for {rom_path}")
+    rom_data = snapshot[rom_start:rom_end]
+    return bytes(rom_data), True
 
 
 def _is_prog_image(image: bytes) -> bool:

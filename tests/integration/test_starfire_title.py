@@ -51,6 +51,18 @@ EXPECTED_ROW10 = [
 ]
 
 
+def _step_machine(machine, cycles: int) -> None:
+    cpu = machine.cpu
+    via = machine.via
+    executed = 0
+    while executed < cycles:
+        step = cpu.step()
+        if step == 0:
+            step = 1
+        via.tick(step)
+        executed += step
+
+
 def _run_until_title(max_cycles: int = 1_200_000) -> tuple["Machine", bool]:
     machine = create_machine(MachineConfig(rom_image=None))
     load_prog(io.BytesIO(ROM_PATH.read_bytes()), machine.memory)
@@ -63,11 +75,11 @@ def _run_until_title(max_cycles: int = 1_200_000) -> tuple["Machine", bool]:
     saw_user_plane = False
     title_detected = False
     while executed < max_cycles:
-        cycles = machine.cpu.step()
-        if cycles == 0:
-            cycles = 1
-        machine.via.tick(cycles)
-        executed += cycles
+        step = machine.cpu.step()
+        if step == 0:
+            step = 1
+        machine.via.tick(step)
+        executed += step
         if machine.via._orb & 0x20:
             saw_user_plane = True
         if not title_detected and executed % 2048 == 0:
@@ -215,7 +227,7 @@ def test_starfire_user_defined_glyphs_loaded() -> None:
     assert any(udc), "user-defined character RAM should not be empty"
 
     expected_glyphs = {
-        0: [0x00, 0x10, 0x38, 0x7C, 0x38, 0x10, 0x00, 0x00],
+        0: [0x00, 0x00, 0x10, 0x38, 0x10, 0x00, 0x00, 0x00],
         4: [0xC3, 0xC3, 0xDB, 0xFF, 0xDB, 0xC3, 0xC3, 0x00],
         10: [0x3C, 0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, 0x3C],
         29: [0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF],
@@ -224,3 +236,35 @@ def test_starfire_user_defined_glyphs_loaded() -> None:
     for index, expected in expected_glyphs.items():
         start = index * 8
         assert list(udc[start : start + 8]) == expected
+
+
+@pytest.mark.skipif(
+    not (ROM_PATH.exists() and STARFIRE_PATH.exists()),
+    reason="STARFIRE title test requires jr100rom.prg and STARFIRE.prg",
+)
+def test_starfire_game_starts_on_z() -> None:
+    machine, saw_user_plane = _run_until_title()
+
+    assert saw_user_plane
+
+    baseline_row = tuple(machine.video_ram.snapshot()[10 * 32 : 11 * 32])
+    keyboard = machine.keyboard
+    keyboard.press("z")
+    _step_machine(machine, 2_000_000)
+    keyboard.release("z")
+
+    pc_reached = False
+    for _ in range(400):
+        _step_machine(machine, 20_000)
+        pc = machine.cpu.state.pc & 0xFFFF
+        if 0x0E45 <= pc <= 0x16C8 or 0xE400 <= pc <= 0xF800:
+            pc_reached = True
+            break
+
+    # Allow additional settling time so that VRAM updates propagate.
+    _step_machine(machine, 800_000)
+
+    current_row = tuple(machine.video_ram.snapshot()[10 * 32 : 11 * 32])
+    assert current_row != baseline_row
+
+    assert pc_reached

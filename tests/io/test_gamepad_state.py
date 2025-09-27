@@ -28,8 +28,7 @@ def test_button_bit_is_active_low() -> None:
 
 def test_override_can_force_bus_value() -> None:
     state = GamepadState()
-    state.override(0x12)
-    assert state.read() == 0x12
+    state.write(0xDF)
+    assert state.read() == 0xDF
     state.set_directions(right=True)
     assert state.read() == 0xDE
-

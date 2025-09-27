@@ -14,7 +14,7 @@ class GamepadState:
     _up: bool = False
     _down: bool = False
     _button: bool = False
-    _override: int | None = None
+    _base: int = 0xDF
 
     # Bit layout (active low):
     # bit7, bit6 : undefined (treated as 1)
@@ -34,9 +34,7 @@ class GamepadState:
     def read(self) -> int:
         """Return the current 8-bit status presented on the bus."""
 
-        if self._override is not None:
-            return self._override
-        status = self._DEFAULT_STATUS
+        status = self._base & 0xFF
         if self._right:
             status &= ~self._BIT_RIGHT
         if self._left:
@@ -49,21 +47,15 @@ class GamepadState:
             status &= ~self._BIT_BUTTON
         return status & 0xFF
 
-    def override(self, value: int) -> None:
-        """Force the bus value irrespective of the physical inputs."""
+    def write(self, value: int) -> None:
+        """Update the baseline state as seen by the JR-100 CPU."""
 
-        self._override = value & 0xFF
-
-    def clear_override(self) -> None:
-        """Return to reporting the physical gamepad state."""
-
-        self._override = None
+        self._base = value & 0xFF
 
     def set_button(self, pressed: bool) -> None:
         """Update the primary button state (active low)."""
 
         self._button = pressed
-        self._override = None
 
     def set_directions(
         self,
@@ -83,18 +75,16 @@ class GamepadState:
             self._up = up
         if down is not None:
             self._down = down
-        self._override = None
 
     def reset(self) -> None:
         """Clear any recorded input state."""
 
+        self._base = self._DEFAULT_STATUS
         self._left = False
         self._right = False
         self._up = False
         self._down = False
         self._button = False
-        self._override = None
 
 
 __all__ = ["GamepadState"]
-

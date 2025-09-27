@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from pyjr100.video import FontSet, Renderer
+from pyjr100.video import FontSet, Renderer, FontManager
+from pyjr100.video.font import GLYPH_BYTES
+from pyjr100.video.font_manager import UDC_START, VRAM_FONT_START
 
 
 def build_font(pattern: int) -> bytes:
-    data = bytearray(128 * 8)
-    for line in range(8):
-        data[1 * 8 + line] = pattern
+    data = bytearray(128 * GLYPH_BYTES)
+    for line in range(GLYPH_BYTES):
+        data[1 * GLYPH_BYTES + line] = pattern
     return bytes(data)
 
 
@@ -56,3 +58,46 @@ def test_render_scale_factor() -> None:
     assert result.get_pixel(15, 0) == (255, 255, 255)
     assert result.get_pixel(16, 0) == (0, 0, 0)
 
+
+def test_user_plane_uses_specific_udc_ranges() -> None:
+    rom = bytes([i % 256 for i in range(128 * GLYPH_BYTES)])
+    manager = FontManager()
+    manager.initialize_rom(rom)
+    font = FontSet(rom, manager)
+
+    def write_udc(code: int, value: int) -> None:
+        index = code - 0x80
+        for line in range(GLYPH_BYTES):
+            manager.update_udc(UDC_START + index * GLYPH_BYTES + line, value)
+
+    def write_vram(code: int, value: int) -> None:
+        index = code - 0xA0
+        for line in range(GLYPH_BYTES):
+            addr = VRAM_FONT_START + index * GLYPH_BYTES + line
+            manager.update_vram_font(addr, value)
+
+    write_udc(0x80, 0x11)
+    write_vram(0xA0, 0x22)
+    write_vram(0xB3, 0x33)
+
+    glyph_rom = tuple(font.get_glyph(0x20, plane=1, font_manager=manager))
+    assert glyph_rom == tuple(rom[0x20 * GLYPH_BYTES : (0x20 + 1) * GLYPH_BYTES])
+
+    glyph_udc = tuple(font.get_glyph(0x80, plane=1, font_manager=manager))
+    assert glyph_udc == tuple([0x11] * GLYPH_BYTES)
+
+    glyph_vram = tuple(font.get_glyph(0xA0, plane=1, font_manager=manager))
+    assert glyph_vram == tuple([0x22] * GLYPH_BYTES)
+
+
+def test_user_plane_falls_back_when_udc_blank() -> None:
+    rom = bytes([i % 256 for i in range(128 * GLYPH_BYTES)])
+    manager = FontManager()
+    manager.initialize_rom(rom)
+    font = FontSet(rom, manager)
+
+    glyph_20 = tuple(font.get_glyph(0x20, plane=1, font_manager=manager))
+    assert glyph_20 == tuple(rom[0x20 * GLYPH_BYTES : (0x20 + 1) * GLYPH_BYTES])
+
+    glyph_60 = tuple(font.get_glyph(0x60, plane=1, font_manager=manager))
+    assert glyph_60 == tuple(rom[0x60 * GLYPH_BYTES : (0x60 + 1) * GLYPH_BYTES])

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable, Tuple
 
 from .font import FONT_HEIGHT, FONT_WIDTH, FontSet
+from .font_manager import FontManager
 from .palette import MONOCHROME, RGBColor, validate_palette
 
 VRAM_WIDTH = 32
@@ -45,7 +46,7 @@ class RenderResult:
 class Renderer:
     """Converts VRAM bytes into an RGB pixel buffer."""
 
-    def __init__(self, font: FontSet, palette=MONOCHROME) -> None:
+    def __init__(self, font: FontSet, palette=MONOCHROME, font_manager: FontManager | None = None) -> None:
         self.font = font
         self.palette = validate_palette(palette)
         self._buffer: bytearray | None = None
@@ -53,6 +54,8 @@ class Renderer:
         self._prev_scale: int | None = None
         self._prev_plane: int | None = None
         self._prev_user_ram: bytes | None = None
+        self._font_manager = font_manager
+        self._font_revision: int | None = None
 
     def render(
         self,
@@ -88,9 +91,12 @@ class Renderer:
             full_refresh = True
 
         current_user_ram = bytes(user_ram) if user_ram is not None else None
+        current_font_revision = self._font_manager.revision if self._font_manager is not None else None
         if self._prev_plane != plane:
             full_refresh = True
         if current_user_ram != self._prev_user_ram and plane == 1:
+            full_refresh = True
+        if plane == 1 and current_font_revision != self._font_revision:
             full_refresh = True
 
         if full_refresh:
@@ -123,6 +129,7 @@ class Renderer:
 
         self._prev_plane = plane
         self._prev_user_ram = current_user_ram
+        self._font_revision = current_font_revision
 
         return RenderResult(width=width, height=height, scale=scale, pixels=buffer)
 
@@ -168,7 +175,12 @@ class Renderer:
         plane: int,
         scale: int,
     ) -> None:
-        glyph = self.font.get_glyph(value, user_ram=user_ram, plane=plane)
+        glyph = self.font.get_glyph(
+            value,
+            user_ram=user_ram,
+            plane=plane,
+            font_manager=self._font_manager,
+        )
         inverted = plane == 0 and (value & 0x80) != 0
         self._blit_glyph(
             pixels,

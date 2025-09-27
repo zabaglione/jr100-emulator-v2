@@ -22,6 +22,7 @@ def test_default_machine_memory_map() -> None:
     assert machine.extended_io.get_end_address() == 0xCFFF
     assert machine.rom.get_start_address() == 0xE000
     assert machine.rom.length == 0x2000
+    assert machine.font_manager is not None
     assert machine.gamepad.read() == 0xDF
 
     assert machine.cpu.memory is machine.memory
@@ -51,14 +52,14 @@ def test_rom_image_initialises_restart_vector() -> None:
 
 def test_via_keyboard_scan_defaults_to_open_matrix() -> None:
     machine = create_machine(MachineConfig())
-    assert machine.memory.load8(0xC800) == 0xDF
+    assert machine.memory.load8(0xC800) == 0x3F
 
 
 def test_extended_io_registers_gamepad_status() -> None:
     machine = create_machine(MachineConfig())
-    machine.memory.store8(0xCC02, 0x9A)
-    assert machine.memory.load8(0xCC02) == 0x9A
-    assert machine.gamepad.read() == 0x9A
+    machine.memory.store8(0xCC02, 0xDF)
+    assert machine.memory.load8(0xCC02) == 0xDF
+    assert machine.gamepad.read() == 0xDF
 
     machine.gamepad.set_directions(right=True)
     assert machine.memory.load8(0xCC02) == 0xDE

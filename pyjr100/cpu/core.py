@@ -85,14 +85,17 @@ class MB8861:
             interrupt_cycles += self._service_nmi()
             self.nmi_pending = False
 
-        if self.irq_pending and not self._get_flag(FLAG_I):
+        if self.wai_latch:
+            if interrupt_cycles == 0 and self.irq_pending:
+                interrupt_cycles += self._service_irq()
+                self.irq_pending = False
+            if interrupt_cycles == 0:
+                if debug_enabled("cpu"):
+                    debug_log("cpu", "wai idle pc=%04x", self.state.pc)
+                return 0
+        elif self.irq_pending and not self._get_flag(FLAG_I):
             interrupt_cycles += self._service_irq()
             self.irq_pending = False
-
-        if self.wai_latch and interrupt_cycles == 0:
-            if debug_enabled("cpu"):
-                debug_log("cpu", "wai idle pc=%04x", self.state.pc)
-            return 0
 
         pc_before = self.state.pc
         opcode = self._fetch_byte()
