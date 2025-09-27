@@ -81,8 +81,8 @@ class JR100App:
         clock = pygame.time.Clock()
 
         fps = 50
-        target_cycles = machine.getClockFrequency() // fps
-        residual = 0
+        target_cycles = machine.getClockFrequency() / fps
+        cycle_accumulator = 0.0
 
         running = True
         cpu = machine.getCPU()
@@ -102,14 +102,17 @@ class JR100App:
                 elif event.type == pygame.KEYUP:
                     self._handle_key_event(event, False)
 
-            cycles_to_execute = target_cycles + residual
+            cycle_accumulator += target_cycles
             executed_cycles = 0
-            while executed_cycles < cycles_to_execute:
+            while cycle_accumulator > 0:
                 consumed = cpu.step()
+                if consumed <= 0:
+                    break
                 executed_cycles += consumed
                 machine.setClockCount(machine.getClockCount() + consumed)
-
-            residual = executed_cycles - target_cycles
+                cycle_accumulator -= consumed
+            if cycle_accumulator < -target_cycles:
+                cycle_accumulator = -target_cycles
 
             via.execute()
             for device in machine.getDevices():
@@ -251,6 +254,10 @@ class JR100App:
     def _handle_key_event(self, event, pressed: bool) -> None:
         key = event.key
         if self._machine is None:
+            return
+        import pygame  # type: ignore
+
+        if getattr(event, "mod", 0) & pygame.KMOD_MODE:
             return
         keyboard = self._machine.keyboard
         mapping: tuple[int, int] | None

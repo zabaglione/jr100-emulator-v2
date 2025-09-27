@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+import math
 from typing import Optional
 
 
@@ -96,17 +97,26 @@ class SquareWaveBeeper:
         if frequency <= 0.0:
             return None
 
-        cycles = max(1, int(round(self._sample_rate / frequency)))
-        half_period = max(1, cycles // 2)
+        period_samples = max(32, int(round(self._sample_rate / frequency)))
+        rank = int(((self._sample_rate / (2.0 * frequency)) + 1.0) / 2.0)
+        rank = max(1, min(30, rank))
 
         buffer = array("h")
-        high = 24_000
-        low = -high
-        for index in range(cycles):
-            buffer.append(high if index < half_period else low)
+        amplitude = 12_000
+        scale = (4.0 / math.pi) * amplitude
+        for index in range(period_samples):
+            phase = (2.0 * math.pi * index) / period_samples
+            total = 0.0
+            for harmonic in range(rank):
+                k = 2 * harmonic + 1
+                total += math.sin(k * phase) / k
+            value = total * scale
+            value = max(-amplitude, min(amplitude, value))
+            sample = int(value)
+            buffer.append(sample)
 
         try:
-            sound = self._pygame.mixer.Sound(buffer=buffer)
+            sound = self._pygame.mixer.Sound(buffer=buffer.tobytes())
         except Exception:  # pragma: no cover - pygame error path
             return None
         return sound

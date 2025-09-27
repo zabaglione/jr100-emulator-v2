@@ -17,12 +17,9 @@ class Beeper:
     _backend_frequency: float = field(init=False, default=0.0)
 
     def __post_init__(self) -> None:
-        try:
-            from pyjr100.audio import SquareWaveBeeper  # type: ignore
-
-            self._backend = SquareWaveBeeper(sample_rate=int(self.sampling_rate))
-        except Exception:
-            self._backend = None
+        # pygame.mixer の初期化が完了していないとバックエンド生成に失敗するため、
+        # ここでは利用可能かどうかだけを試行し、失敗時は後続の呼び出しに委ねる。
+        self._ensure_backend()
 
     def setFrequency(self, timestamp: int, frequency: float) -> None:  # noqa: N802
         self.frequency = max(0.0, float(frequency))
@@ -52,6 +49,7 @@ class Beeper:
                 self._backend.shutdown()
             except Exception:
                 pass
+        self._backend = None
         self._backend_active = False
         self._backend_frequency = 0.0
 
@@ -67,7 +65,13 @@ class Beeper:
     def _apply_state(self) -> None:
         backend = self._backend
         if backend is None:
-            return
+            if not self._ensure_backend():
+                self._backend_active = False
+                self._backend_frequency = 0.0
+                return
+            backend = self._backend
+            if backend is None:
+                return
         enabled = self.line_on and self.frequency > 0.0
         if (
             enabled != self._backend_active
@@ -79,6 +83,24 @@ class Beeper:
                 return
             self._backend_active = enabled
             self._backend_frequency = self.frequency if enabled else 0.0
+
+    def _ensure_backend(self) -> bool:
+        """Instantiate the pygame-backed beeper when possible."""
+
+        if self._backend is not None:
+            return True
+        try:
+            import pygame  # type: ignore
+
+            if pygame.mixer.get_init() is None:
+                return False
+            from pyjr100.audio import SquareWaveBeeper  # type: ignore
+
+            self._backend = SquareWaveBeeper(sample_rate=int(self.sampling_rate))
+            return True
+        except Exception:
+            self._backend = None
+            return False
 
 
 __all__ = ["Beeper"]
